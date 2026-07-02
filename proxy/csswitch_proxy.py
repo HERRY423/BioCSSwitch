@@ -220,7 +220,35 @@ def anthropic_to_openai(req):
                          "function": {"name": t["name"], "description": t.get("description", ""),
                                       "parameters": t.get("input_schema", {})}}
                         for t in req["tools"] if t.get("name")]
+    tcm = map_tool_choice(req.get("tool_choice"), req.get("tools"))
+    if tcm is not None:
+        out["tool_choice"] = tcm
+    if req.get("stop_sequences"):
+        out["stop"] = req["stop_sequences"]
+    if req.get("top_p") is not None:
+        out["top_p"] = req["top_p"]
     return out
+
+
+def map_tool_choice(tc, tools):
+    """把 Anthropic tool_choice 译成 OpenAI 兼容取值。
+    any 不做通用映射：单工具直接指定该函数（等效强制且不依赖 required）；
+    多工具退 "required"（DashScope 若不支持会以上游错误显式暴露，不静默退化）。"""
+    if not isinstance(tc, dict):
+        return None
+    t = tc.get("type")
+    if t == "auto":
+        return "auto"
+    if t == "none":
+        return "none"
+    if t == "tool" and tc.get("name"):
+        return {"type": "function", "function": {"name": tc["name"]}}
+    if t == "any":
+        names = [x["name"] for x in (tools or []) if x.get("name")]
+        if len(names) == 1:
+            return {"type": "function", "function": {"name": names[0]}}
+        return "required"
+    return None
 
 
 def openai_to_anthropic(resp, model_id):
