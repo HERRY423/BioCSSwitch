@@ -204,9 +204,21 @@ fn ensure_proxy(
         .ok_or("找不到代理脚本 proxy/csswitch_proxy.py（打包资源或仓库根均未命中）。开发态可设 CSSWITCH_REPO。")?;
     let py = proc::which("python3").ok_or("缺少依赖 python3。")?;
 
+    // path-secret：**持久化复用**。已在跑的沙箱把该 secret 嵌进了 ANTHROPIC_BASE_URL，
+    // 若每次起代理都换 secret，代理一重启（换 key/换 provider/重开 app）沙箱就会拿旧 secret
+    // 打到新代理 → 全部 403（修 P1：代理重启后沙箱失联）。故从 config 读稳定 secret，
+    // 首次为空才生成一次并写回，之后所有代理进程都复用它。
+    let secret = if !cfg.secret.is_empty() {
+        cfg.secret.clone()
+    } else {
+        let s = proc::gen_secret().map_err(|e| format!("无法生成安全 secret：{e}"))?;
+        let s2 = s.clone();
+        config::update(&dir, move |c| c.secret = s2).map_err(|e| e.to_string())?;
+        s
+    };
+
     // 整个「检查 → 清残留 → 起进程 → 记账」在同一把锁内完成，避免并发双击时
     // 两路都判定「没健康代理」各起一个、后者覆盖前者的 Child 句柄导致前者被孤儿泄漏。
-    let secret;
     {
         let mut st = lock(state);
         // 幂等：已在跑且健康、且【端口 + provider + key 指纹】都一致才复用。
@@ -221,8 +233,14 @@ fn ensure_proxy(
         }
         // 清残留（换端口/换 provider/换 key/不健康）。
         kill_child(&mut st.proxy);
+        // 再清掉上次会话遗留、绑在同端口上的孤儿代理：崩溃或强退不会触发本进程的 kill，
+        // 孤儿仍占着端口 → 新代理绑不上（Errno 48）→ 探活超时。按「脚本名 + 端口」精确匹配，
+        // 只杀我们自己的代理，绝不误伤其它进程。配合代理侧的绑定重试彻底消除竞态。
+        let _ = Command::new("pkill")
+            .arg("-f")
+            .arg(format!("csswitch_proxy\\.py.*--port {port}"))
+            .status();
 
-        let new_secret = proc::gen_secret().map_err(|e| format!("无法生成安全 secret：{e}"))?;
         let script = root.join("proxy/csswitch_proxy.py");
         let logf = open_log("proxy.log").map_err(|e| format!("建日志失败：{e}"))?;
         let logf2 = logf.try_clone().map_err(|e| e.to_string())?;
@@ -233,7 +251,7 @@ fn ensure_proxy(
             .arg("--port")
             .arg(port.to_string())
             .arg("--auth-token")
-            .arg(&new_secret)
+            .arg(&secret)
             // key 经环境变量注入，绝不作为命令行参数（避免 ps 泄露）。
             .env(key_env(&provider), &key)
             .stdout(Stdio::from(logf))
@@ -242,10 +260,9 @@ fn ensure_proxy(
             .map_err(|e| format!("启动代理失败：{e}"))?;
         st.proxy = Some(child);
         st.proxy_port = port;
-        st.secret = new_secret.clone();
+        st.secret = secret.clone();
         st.provider = provider;
         st.key_fp = key_fp;
-        secret = new_secret;
     }
 
     // 探活最多 ~4s（锁外，不阻塞 status 等命令）。
@@ -373,6 +390,31 @@ fn start_proxy(
 ) -> Result<serde_json::Value, String> {
     let (port, _secret) = ensure_proxy(&app, &state)?;
     Ok(json!({ "port": port }))
+}
+
+/// 「存 key 即验证」：确保代理在跑，再经代理向上游发一个**最小**请求
+/// （`max_tokens:1`，一句 "ping"），据响应状态码判断 key 是否真的可用。
+/// 返回 `{ok, hint}`：ok=true 表示上游接受（key 有效）；ok=false 表示上游拒绝或异常，
+/// hint 给人话。彻底避免「只看绿灯（代理起来了）≠ key 真能用」。
+#[tauri::command]
+fn verify_key(
+    app: tauri::AppHandle,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let (port, secret) = ensure_proxy(&app, &state)?;
+    // 走稳定模型 id（代理内部映射到当前 provider 的真实模型），非流式、只要 1 个 token。
+    let body = br#"{"model":"claude-opus-4-8","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
+    match proc::http_post_status(port, Some(&secret), "/v1/messages", body, 15000) {
+        Some(200) => Ok(json!({ "ok": true, "hint": "key 有效，上游已接受。" })),
+        Some(code @ (401 | 403)) => {
+            Ok(json!({ "ok": false, "hint": format!("上游拒绝（{code}），key 可能无效或无权限。") }))
+        }
+        Some(code) => Ok(json!({
+            "ok": false,
+            "hint": format!("上游返回 {code}，可能是 key 无效、额度不足或上游异常。")
+        })),
+        None => Err("验证请求无响应（多为网络或上游不通）。".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -547,6 +589,24 @@ fn open_release_page() -> Result<(), String> {
     open_in_browser("https://github.com/SuperJJ007/CSswitch/releases/latest")
 }
 
+/// 打开「报 bug」页（预填 bug 模板）；用系统浏览器，走用户自己的代理。
+#[tauri::command]
+fn report_bug() -> Result<(), String> {
+    open_in_browser("https://github.com/SuperJJ007/CSswitch/issues/new?template=bug_report.yml")
+}
+
+/// 在访达里打开日志目录 `~/.csswitch/logs`，方便用户附到 bug 反馈里（先自查有无密钥）。
+#[tauri::command]
+fn open_logs() -> Result<(), String> {
+    let dir = config::default_dir().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    Command::new("open")
+        .arg(&dir)
+        .status()
+        .map_err(|e| format!("打开日志目录失败：{e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle, state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     // 默认：退 app 停代理、保留沙箱运行（spec §5.1）。
@@ -588,6 +648,21 @@ mod tests {
     }
 }
 
+/// 把面板锚到主屏右上角、菜单栏正下方（菜单栏 app 的下拉位置）。
+/// 无边框窗口默认开在屏幕正中，离菜单栏很远且拖不动，故每次显示前重定位。
+fn anchor_top_right(win: &tauri::WebviewWindow) {
+    if let (Ok(Some(mon)), Ok(win_size)) = (win.primary_monitor(), win.outer_size()) {
+        let mon_pos = mon.position();
+        let mon_size = mon.size();
+        let scale = mon.scale_factor();
+        let margin = (10.0 * scale) as i32;
+        let menubar = (26.0 * scale) as i32;
+        let x = mon_pos.x + mon_size.width as i32 - win_size.width as i32 - margin;
+        let y = mon_pos.y + menubar;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
 // ---------- 入口 ----------
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -599,6 +674,7 @@ pub fn run() {
             set_config,
             save_provider_key,
             start_proxy,
+            verify_key,
             stop_all,
             one_click_login,
             status,
@@ -606,6 +682,8 @@ pub fn run() {
             run_doctor,
             app_version,
             open_release_page,
+            report_bug,
+            open_logs,
             quit_app
         ])
         .setup(|app| {
@@ -637,6 +715,7 @@ pub fn run() {
                             if win.is_visible().unwrap_or(false) {
                                 let _ = win.hide();
                             } else {
+                                anchor_top_right(&win); // 锚到菜单栏下方，别开在屏幕正中
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }

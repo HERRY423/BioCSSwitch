@@ -549,4 +549,18 @@ if __name__ == "__main__":
         sys.exit(1)
     log(f"CSSwitch 代理启动 127.0.0.1:{args.port}  provider={PROV_NAME}  "
         f"key=已加载(未显示)  上游={PROV['url']}")
-    ThreadingHTTPServer(("127.0.0.1", args.port), H).serve_forever()
+    # 绑定重试：上次会话遗留的孤儿代理可能还占着端口（app 侧会主动清，但退干净需一点时间）。
+    # 重试 ~3s 等端口释放，避免一次绑不上就直接失败（Errno 48）。
+    srv = None
+    for attempt in range(10):
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", args.port), H)
+            break
+        except OSError as e:
+            if attempt == 9:
+                print(f"[csswitch] 端口 {args.port} 无法绑定：{e}。"
+                      f"可能被占用（结束占用进程，或在面板「高级」里换个端口）。",
+                      file=sys.stderr, flush=True)
+                sys.exit(2)
+            time.sleep(0.3)
+    srv.serve_forever()

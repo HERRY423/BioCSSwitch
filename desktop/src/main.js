@@ -18,6 +18,8 @@ function mockInvoke(cmd, args) {
       return Promise.resolve("••••••••••" + String((args && args.key) || "").slice(-4));
     case "start_proxy":
       return Promise.resolve({ port: 18991 });
+    case "verify_key":
+      return Promise.resolve({ ok: true, hint: "（预览模式：假装 key 有效）" });
     case "one_click_login":
       return Promise.resolve({ url: "http://127.0.0.1:8990" });
     case "run_doctor":
@@ -25,6 +27,8 @@ function mockInvoke(cmd, args) {
     case "app_version":
       return Promise.resolve("0.0.0-preview");
     case "open_release_page":
+    case "report_bug":
+    case "open_logs":
       return Promise.resolve(null);
     default:
       return Promise.resolve(null);
@@ -113,13 +117,22 @@ async function saveKey() {
     const masked = await call("save_provider_key", { provider: els.provider.value, key });
     window._keys[els.provider.value] = masked;
     reflectProvider();
-    setMsg("已保存，正在启动代理…", "ok");
-    // 存了 key 就自动起代理：省一步，且顺带验证这把 key 能不能用（绿灯即通）。
+    setMsg("已保存，正在启动代理并验证 key…", "ok");
     await persistSettings();
-    const r = await call("start_proxy");
-    setMsg("已保存，代理已启动（端口 " + r.port + "）。点「一键越过登录」即可。", "ok");
+    // 存了 key 就自动起代理 + 用最小请求真验一次这把 key（不是「代理起来了」就当成功）。
+    try {
+      const v = await call("verify_key");
+      if (v && v.ok) {
+        setMsg("已保存，key 有效 ✓ 代理已就绪，点「一键越过登录」即可。", "ok");
+      } else {
+        setMsg("已保存，代理已起；但 key 未通过验证：" + ((v && v.hint) || "上游未接受") + " 可仍试「一键越过登录」。", "err");
+      }
+    } catch (ve) {
+      // 代理没起来（缺依赖/端口占用），或验证请求发不出去（网络/上游不通）。
+      setMsg("已保存；但未能验证 key：" + ve, "err");
+    }
   } catch (e) {
-    setMsg("保存或启动代理失败：" + e, "err");
+    setMsg("保存失败：" + e, "err");
   } finally {
     setBusy(false);
     await refreshStatus();
@@ -144,6 +157,15 @@ async function oneClick() {
   setBusy(true);
   setMsg("一键越过登录：起代理 → 起沙箱 → 探活…");
   try {
+    // 「粘贴 key → 直接一键越过登录」也要能走通：输入框里有新 key 就先存下，
+    // 不强制用户先点「保存」（修 P1：oneClick 之前不读/不存输入框，导致无 key 起代理失败）。
+    const key = els.keyInput.value.trim();
+    if (key) {
+      const masked = await call("save_provider_key", { provider: els.provider.value, key });
+      window._keys[els.provider.value] = masked;
+      els.keyInput.value = "";
+      reflectProvider();
+    }
     await persistSettings();
     const r = await call("one_click_login");
     setMsg("登录态就绪。正在打开浏览器面板…\n" + (r.url || ""), "ok");
@@ -228,7 +250,8 @@ function wire() {
   [
     "provider", "keyLabel", "keyInput", "saveKeyBtn", "proxyPort", "sandboxPort",
     "oneClickBtn", "stopBtn", "ltProxy", "ltSandbox", "ltUpstream",
-    "msg", "brandDot", "openBrowserBtn", "doctorBtn", "updateBtn", "verLabel", "quitBtn",
+    "msg", "brandDot", "openBrowserBtn", "doctorBtn", "updateBtn", "verLabel",
+    "reportBtn", "logsBtn", "quitBtn",
   ].forEach((id) => (els[id] = $(id)));
 
   els.provider.addEventListener("change", async () => {
@@ -243,6 +266,12 @@ function wire() {
   els.openBrowserBtn.addEventListener("click", openBrowser);
   els.doctorBtn.addEventListener("click", runDoctor);
   els.updateBtn.addEventListener("click", checkUpdate);
+  els.reportBtn.addEventListener("click", () =>
+    call("report_bug").catch((e) => setMsg("打开反馈页失败：" + e, "err"))
+  );
+  els.logsBtn.addEventListener("click", () =>
+    call("open_logs").catch((e) => setMsg("打开日志失败：" + e, "err"))
+  );
   els.quitBtn.addEventListener("click", () => call("quit_app").catch(() => {}));
 }
 

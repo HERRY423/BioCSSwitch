@@ -43,6 +43,11 @@ pub struct Config {
     pub proxy_port: u16,
     #[serde(default = "default_sandbox_port")]
     pub sandbox_port: u16,
+    /// 代理的 path-secret。**持久化**并跨代理重启/换 key/换 provider/重开 app 复用，
+    /// 这样已在跑的沙箱（其 ANTHROPIC_BASE_URL 里嵌了该 secret）不会因代理换 secret 而 403。
+    /// 首次为空，由后端生成一次后写回。
+    #[serde(default)]
+    pub secret: String,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderCfg>,
 }
@@ -53,6 +58,7 @@ impl Default for Config {
             provider: default_provider(),
             proxy_port: default_proxy_port(),
             sandbox_port: default_sandbox_port(),
+            secret: String::new(),
             providers: BTreeMap::new(),
         }
     }
@@ -327,6 +333,20 @@ mod tests {
         let got = load_from(&d).unwrap();
         assert_eq!(got.provider, "qwen");
         assert_eq!(got.key_for("qwen").as_deref(), Some("k-xyz"));
+    }
+
+    #[test]
+    fn secret_persists_and_survives_reload() {
+        // path-secret 一旦生成必须持久化，代理重启/重开 app 仍是同一个值，
+        // 否则已在跑的沙箱会因 secret 变了而 403（P1）。
+        let d = tmpdir().join(".csswitch");
+        save_to(&d, &Config::default()).unwrap();
+        assert!(load_from(&d).unwrap().secret.is_empty(), "初始应为空");
+        update(&d, |c| c.secret = "deadbeef00112233".into()).unwrap();
+        assert_eq!(load_from(&d).unwrap().secret, "deadbeef00112233");
+        // 再改别的字段，secret 不受影响。
+        update(&d, |c| c.provider = "qwen".into()).unwrap();
+        assert_eq!(load_from(&d).unwrap().secret, "deadbeef00112233");
     }
 
     #[test]

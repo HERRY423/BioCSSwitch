@@ -9,8 +9,8 @@
   </head>
   <body>
     <div class="panel">
-      <div class="hd">
-        <div class="brand"><span id="brandDot" class="dot amber"></span>CSSwitch</div>
+      <div class="hd" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region><span id="brandDot" class="dot amber"></span>CSSwitch</div>
         <div class="gear" id="quitBtn" title="退出 CSSwitch">退出</div>
       </div>
 
@@ -57,11 +57,11 @@
 
       <div class="foot">
         <span class="link" id="openBrowserBtn">打开浏览器面板 ↗</span>
-        <span>
-          <span class="link" id="doctorBtn">自检</span>
-          <span class="link" id="updateBtn" style="margin-left:10px">检查更新</span>
-          <span id="verLabel" style="margin-left:10px;opacity:.65"></span>
-        </span>
+        <span class="link" id="reportBtn">反馈 / 报 bug</span>
+      </div>
+      <div class="foot foot2">
+        <span><span class="link" id="doctorBtn">自检</span> · <span class="link" id="logsBtn">日志</span></span>
+        <span><span class="link" id="updateBtn">检查更新</span> · <span id="verLabel"></span></span>
       </div>
     </div>
     <script type="module" src="/main.js"></script>

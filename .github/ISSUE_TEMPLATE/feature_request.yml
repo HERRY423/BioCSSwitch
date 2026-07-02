@@ -1,0 +1,18 @@
+name: 功能建议 / 想支持的 API
+description: 提想法，或希望支持的模型 / API / Skill / MCP
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你希望的功能
+      placeholder: 例如：希望支持某个第三方 API（Kimi / 智谱 GLM / OpenRouter / 本地 Ollama…）、某个学科的 Skill 或 MCP。
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: 用在什么场景 / 为什么需要
+    validations:
+      required: false

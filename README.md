@@ -77,6 +77,16 @@ DeepSeek 原生 Anthropic 端点  /  通义千问等 OpenAI 兼容端点
 - Intel（x86_64）与 universal 构建；可选的正式签名与 Apple 公证。
 - 面板增加日志查看、用量统计、更快的 provider 切换入口。
 
+## 反馈与报错
+
+遇到问题或有想法，欢迎在 GitHub 提交（比私信更利于跟踪与复用）：
+
+- **报 bug**：[新建 Bug 反馈](https://github.com/SuperJJ007/CSswitch/issues/new?template=bug_report.yml)，或面板右下角「反馈 / 报 bug」直接跳转。
+- **提功能 / 想支持的 API**：[新建功能建议](https://github.com/SuperJJ007/CSswitch/issues/new?template=feature_request.yml)。
+- **附日志更快定位**：面板「日志」链接会打开 `~/.csswitch/logs/`（`proxy.log`、`sandbox.log`）。**贴之前务必先删掉任何 API key / 令牌。**
+
+隐私：本项目**不含任何自动遥测 / 崩溃上报**，不会在后台把你的数据发给任何人。所有反馈都由你手动提交、内容由你决定。
+
 ## 风险与免责声明
 
 - 本项目仅供**个人学习与研究**用途，**使用者自负风险**。

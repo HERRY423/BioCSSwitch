@@ -47,6 +47,51 @@ pub fn http_health(port: u16, secret: Option<&str>, timeout_ms: u64) -> bool {
     status_line.split_whitespace().nth(1) == Some("200")
 }
 
+/// 向本地回环代理 POST 一段 JSON（`POST /<secret><path>`），返回 HTTP 响应状态码；
+/// 连不上 / 无响应返回 None。用于「存 key 后用最小请求真正验一次 key」——
+/// 请求经代理打到上游，200=可用，401/403=key 被拒。回环明文，无需 TLS。
+/// timeout_ms 要给足（代理要转发上游），建议调用方传 ~15000。
+pub fn http_post_status(
+    port: u16,
+    secret: Option<&str>,
+    path_suffix: &str,
+    body: &[u8],
+    timeout_ms: u64,
+) -> Option<u16> {
+    let addr = ("127.0.0.1", port).to_socket_addrs().ok()?.next()?;
+    let dur = Duration::from_millis(timeout_ms);
+    let mut stream = TcpStream::connect_timeout(&addr, dur).ok()?;
+    let _ = stream.set_read_timeout(Some(dur));
+    let _ = stream.set_write_timeout(Some(dur));
+    let path = match secret {
+        Some(s) if !s.is_empty() => format!("/{s}{path_suffix}"),
+        _ => path_suffix.to_string(),
+    };
+    let req = format!(
+        "POST {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).ok()?;
+    stream.write_all(body).ok()?;
+    // 只需读到状态行（非流式响应，状态行随首个头块到达）；读上限防呆。
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    while buf.len() < 8192 {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let head = String::from_utf8_lossy(&buf);
+    let status_line = head.lines().next().unwrap_or("");
+    status_line.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok())
+}
+
 /// 上游主机可达性（仅 TCP 连通，不校验 key）。绿灯=可达，黄灯=不可达。
 pub fn tcp_reachable(host: &str, port: u16, timeout_ms: u64) -> bool {
     let dur = Duration::from_millis(timeout_ms);
