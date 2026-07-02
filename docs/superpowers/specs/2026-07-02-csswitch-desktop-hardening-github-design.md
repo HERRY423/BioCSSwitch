@@ -246,3 +246,12 @@ CSSwitch 让 Claude Science 的模型推理走第三方 API（DeepSeek 默认、
 - Qwen 多工具 `any` 的落点，依赖 DashScope 对 `required` 的实测支持（见 7.4）。
 - path 前缀 secret 与 Science base_url 拼接的兼容性（见 7.2），先验主方案，不通退备用。
 - DeepSeek 官方模型 id 核对：`model_map` 里的 `deepseek-v4-pro`、`deepseek-v4-flash` 必须与 DeepSeek 官方目录（api.deepseek.com）当前真实模型名对齐，否则原生端点拒收。实现阶段拉一次官方模型列表核对，对不上就改映射。上游走的是 DeepSeek 第一方官方 API（`https://api.deepseek.com/anthropic/v1/messages`，`x-api-key` + `DEEPSEEK_API_KEY`），非第三方转卖。
+
+## 13. 从竞品 claude-science-api-bridge 借鉴的待办
+
+对比开源竞品 `Jyx0208/claude-science-api-bridge`（同类：Science 接第三方，但直接改真实目录、无鉴权写端点、含 443/hosts/证书拦截，均为反面教材）后，抽出可借鉴的形态层面改进，挂到后续阶段：
+
+- 配置结构（Phase 1）：config 支持多 provider（deepseek/openai/custom 或更多）+ per-provider `model_map` + `model_pattern`，取代当前写死在 `PROVIDERS` 里的映射。Phase 0 的 `model_caps` 到时并入这套结构。
+- 面板（Phase 1）：key 打码回显、写接口拒收打码占位符（本 spec 评审已要求，竞品做法可印证细节）。
+- 运维脚本（Phase 2）：`doctor`（只读诊断）/ `self-test` / `verify-proxy` 三件套，方便安装后自检。
+- 明确不借鉴（安全底线）：绝不动真实 `~/.claude-science`；管理写端点必须鉴权；不做 443/hosts/证书拦截（已判定 base_url 无条件生效，推理无需拦截）。
