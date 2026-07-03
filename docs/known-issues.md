@@ -89,14 +89,16 @@
 
 ## 8. 「API 支持」重架方向：cc-switch 式多 profile 配置 + 代理移 Rust（2026-07-03 定，主线）
 
-> **状态：方向已定，待 brainstorming 出 spec、再写实现计划。** 取代原「② 面板内自定义 OpenAI 端点」，升级成 cc-switch 看家的**多配置管理**。
+> **状态（2026-07-03 更新）：轨道 1（多 profile 配置）实现完成 + 逐块及整体过审 + 全绿，待用户真机手测，未 merge；轨道 2（代理移 Rust）未做。** 取代原「② 面板内自定义 OpenAI 端点」，升级成 cc-switch 看家的**多配置管理**。
+>
+> **轨道 1 已落地**（`feat/relay-presets` 分支，HEAD `fdad9ea`，同分支重构掉固定槽）：spec v2（折进 Codex 外审 P1×6+P2）→ 计划 → subagent-driven 实现：**MP-1 后端**（`ProviderCfg`→`Profile`；`relay_presets.rs`→`templates.rs` 7 家 `template_id`→adapter 注册表，deepseek 保留模型映射/relay 透传双鉴权/qwen 翻译；v1→v2 迁移不丢数据 + `.v1.bak` 失败即中止 + `schema>2` 拒启 + 幂等；profile CRUD 命令面）+ **MP-2 后端**（生命周期串行器 + 切换事务：scratch 校验→起正式代理→探活健康**才**提交→失败杀候选恢复旧代理→**不停沙箱**→generation token；连接编辑 validate-before-persist）+ **前端 Phase C**（面板重写为 profile 列表 UI，对接新命令面）。whole-feature 终审 Approved（M1 `get_config` 补 notes、M2 切换写盘失败回滚进程 已修）。**全绿**：cargo test 104、clippy -D warnings 0、fmt、node --check、`run_all.sh` ALL GREEN、gitleaks 0。durable 账本见 `.superpowers/sdd/progress.md`「多 profile 重架」段（含累积 Minor triage）。**坑**：本项目 Tauri(2.6.3, 无 rename_all) 顶层多词命令参数是 **camelCase**（templateId/skipVerify），serde struct 包装参内字段才蛇形。
 
 - **要做什么（用户 2026-07-03）**：像 cc-switch 那样能**存多套命名配置（profile）**、列出来、一键切当前生效的那套（同一家可存多套、可命名、可增删）。现在是**固定槽**（deepseek/qwen/relay-glm/…每家一份），做不到多套 → 数据模型从「固定槽」升级为「用户自管的 profile 列表 + 当前生效指针」。
 - **配置存储：先不换 SQLite（用户要「保持稳定」）。** 多 profile 只是数据模型（JSON 存一个数组即可），跟存储后端解耦。这版继续 JSON、把它硬化（原子写已有 + schema 版本字段 + 覆盖前留 `.bak` + 修面板回显可见性缺口）；SQLite 留到确有扩展需求（多窗口并发 / 大量记录 / 历史）时再迁，届时 JSON→SQLite 迁移很简单。SQLite 价值在可扩展+并发，不在「更稳」。
 - **代理移 Rust（独立轨道）**：翻译代理从 python 移到 Rust（axum），**vendor cc-switch 的 MIT `transform*.rs`** 拿广覆盖（4 种 apiFormat），加我们的 path-secret + 虚拟 OAuth 剥离。cc-switch 代理**不能当 sidecar 直接复用**（焊死它的 SQLite DB，见 `verified-facts.md` 事实 5），复用 = 移植它的翻译模块。这条同时完成 python-ectomy 治本，与「多 profile 配置」解耦。
 - **relay-presets 分支现状**：`feat/relay-presets`（Task1-13 全实现 + opus 终审过）实现了 relay provider + 预设 + 面板选模型，但用**固定槽 + python 代理**，**降为参考/回退，不作为发布基座**（重架后被多 profile + Rust 代理取代）。HEAD `2a5084f`（f148eb2 + P3 hygiene 修）**clippy-green**。GPT 外审逐条核实：P1「保存写错槽+覆盖」= 尖端已修（STALE）；P1b「保存非原子」+ P2a「自愈忽略停沙箱失败 `lib.rs:967`」= 真 Important、折进重架设计（P2a 应像 `set_mode` 停失败即中止）；P2b「python 代理 OSError 全当占用」= 真但代理要换掉；P3「clippy 2 处 + 版本不一致」= 已修（`2a5084f`）。**教训**：验收闸门要含 `cargo clippy --all-targets -D warnings`（比 `cargo test` 的 rustc 警告更严；账本旧称「0 warnings」漏了 clippy）。
-- **未提交证据**：`findings/2026-07-03-pr4-relay-provider-testing.md`（隔离层四家 GLM/小米/硅基流动/OpenRouter 真机实测，含工具，守铁律4 未启 Science），收尾时提交。
-- **下一步**：brainstorming 多 profile 配置模型 → spec（`docs/superpowers/specs/`）→ `superpowers:writing-plans`。
+- **隔离层四家实测证据**：`findings/2026-07-03-pr4-relay-provider-testing.md`（GLM/小米/硅基流动/OpenRouter 真机实测，含工具，守铁律4 未启 Science），已随 `c8b9cfe` 提交。
+- **下一步**：① **用户在场做真机整链手测**（构建 + 启动 app，逐项过：迁移后旧对话在不在 / 新建 / 切换 / 一键开始 / 连接编辑 / 清 key / 删除；起沙箱 Science + 登录那步由用户手动，守铁律 2/3/4）；② 过了再谈 merge（现未 push、main 未动）+ 更新 `CHANGELOG.md`（**故意还没写**，避免仓库里提前显「已完成」）；③ 轨道 2 = 代理移 Rust（另起 spec）。spec/计划在 `docs/superpowers/`（gitignore）。
 
 ---
 
