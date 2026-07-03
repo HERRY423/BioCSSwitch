@@ -10,8 +10,20 @@ const invoke = PREVIEW
 
 function mockInvoke(cmd, args) {
   switch (cmd) {
+    case "get_relay_presets":
+      return Promise.resolve({ presets: [
+        { id: "relay-xiaomi", name: "小米 MiMo", base_url: "https://api.xiaomimimo.com/anthropic", base_url_editable: false, requires_model_override: true, builtin_models: ["mimo-v2.5-pro"] },
+        { id: "relay-glm", name: "智谱 GLM", base_url: "https://open.bigmodel.cn/api/anthropic", base_url_editable: false, requires_model_override: false, builtin_models: ["glm-4.6", "glm-5", "glm-4.5-air"] },
+        { id: "relay-siliconflow", name: "硅基流动", base_url: "https://api.siliconflow.cn", base_url_editable: false, requires_model_override: true, builtin_models: ["deepseek-ai/DeepSeek-V3", "zai-org/GLM-5.2"] },
+        { id: "relay-openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api", base_url_editable: false, requires_model_override: false, builtin_models: ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.8-fast"] },
+        { id: "relay-custom", name: "自定义", base_url: "", base_url_editable: true, requires_model_override: true, builtin_models: [] },
+      ] });
     case "get_config":
-      return Promise.resolve({ provider: "deepseek", proxy_port: 18991, sandbox_port: 8990, mode: "proxy", keys: { deepseek: "", qwen: "", relay: "" }, relay_base_url: "" });
+      return Promise.resolve({ provider: "deepseek", proxy_port: 18991, sandbox_port: 8990, mode: "proxy", keys: { deepseek: "", qwen: "" }, relay: {} });
+    case "fetch_relay_models":
+      return Promise.resolve({ models: [ { id: "glm-4.6", supports_tools: true }, { id: "glm-5", supports_tools: null }, { id: "glm-lite", supports_tools: false } ], source: "live", error_kind: null, upstream_status: 200 });
+    case "save_relay_config":
+      return Promise.resolve({ committed: true, hint: "（预览模式：假装已验证保存）" });
     case "set_mode":
     case "open_official":
       return Promise.resolve(null);
@@ -23,8 +35,6 @@ function mockInvoke(cmd, args) {
       return Promise.resolve({ port: 18991 });
     case "verify_key":
       return Promise.resolve({ ok: true, hint: "（预览模式：假装 key 有效）" });
-    case "fetch_relay_models":
-      return Promise.resolve({ models: ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022"] });
     case "one_click_login":
       return Promise.resolve({ url: "http://127.0.0.1:8990" });
     case "run_doctor":
@@ -45,6 +55,8 @@ const els = {};
 let statusTimer = null;
 let busy = false;
 let mode = "proxy"; // "proxy" 第三方 | "official" 官方
+let presets = [];        // get_relay_presets 结果
+let relayCfg = {};       // get_config().relay：{<id>:{key,base_url,model}}
 
 const KEY_LABELS = { deepseek: "DeepSeek API Key", qwen: "DashScope (通义千问) API Key", relay: "中转站 API Key / Token" };
 
@@ -61,7 +73,7 @@ function setLight(el, state) {
 
 function setBusy(on) {
   busy = on;
-  [els.oneClickBtn, els.stopBtn, els.saveKeyBtn, els.fetchModelsBtn].forEach(
+  [els.oneClickBtn, els.stopBtn, els.saveKeyBtn, els.fetchModelsBtn, els.saveRelayBtn, els.skipVerifyBtn].forEach(
     (b) => b && (b.disabled = on)
   );
 }
@@ -72,16 +84,44 @@ async function call(cmd, args) {
 
 async function loadConfig() {
   try {
+    presets = ((await call("get_relay_presets")) || {}).presets || [];
+    fillPresetSelect();
     const cfg = await call("get_config");
-    els.provider.value = cfg.provider || "deepseek";
+    relayCfg = cfg.relay || {};
+    const prov = cfg.provider || "deepseek";
+    if (prov.startsWith("relay-")) {
+      els.provider.value = "relay";          // 顶层哨兵
+      els.relayPreset.value = prov;          // 预设下拉选具体 id
+    } else {
+      els.provider.value = prov;
+    }
     els.proxyPort.value = cfg.proxy_port ?? 18991;
     els.sandboxPort.value = cfg.sandbox_port ?? 8990;
-    els.relayBase.value = cfg.relay_base_url || "";
     window._keys = cfg.keys || {};
     applyMode(cfg.mode === "official" ? "official" : "proxy");
     reflectProvider();
+    reflectPreset();
   } catch (e) {
     setMsg("读取配置失败：" + e, "err");
+  }
+}
+
+// 当前选中的预设 id：顶层 provider=relay 哨兵时，取预设下拉值。
+function currentPresetId() {
+  return els.relayPreset.value || "relay-glm";
+}
+function currentPreset() {
+  return presets.find((p) => p.id === currentPresetId()) || null;
+}
+
+// 铺预设下拉（一次）。
+function fillPresetSelect() {
+  els.relayPreset.innerHTML = "";
+  for (const p of presets) {
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = p.name;
+    els.relayPreset.appendChild(o);
   }
 }
 
@@ -391,13 +431,17 @@ async function refreshStatus() {
   }
 }
 
+function reflectPreset() { /* Task 12 填充 */ }
+async function saveRelay(_skip) { /* Task 13 填充 */ }
+
 function wire() {
   [
     "provider", "keyLabel", "keyInput", "saveKeyBtn", "proxyPort", "sandboxPort",
     "oneClickBtn", "stopBtn", "ltProxy", "ltSandbox", "ltUpstream",
     "msg", "brandDot", "openBrowserBtn", "doctorBtn", "updateBtn", "verLabel",
     "reportBtn", "logsBtn", "quitBtn", "modeSeg",
-    "relayBase", "fetchModelsBtn", "modelList",
+    "relayBase", "relayBaseHint", "fetchModelsBtn",
+    "relayPreset", "relayModel", "relayModelHint", "saveRelayBtn", "skipVerifyBtn",
   ].forEach((id) => (els[id] = $(id)));
   els.panel = document.querySelector(".panel");
 
@@ -426,6 +470,9 @@ function wire() {
     call("open_logs").catch((e) => setMsg("打开日志失败：" + e, "err"))
   );
   els.quitBtn.addEventListener("click", () => call("quit_app").catch(() => {}));
+  els.relayPreset.addEventListener("change", reflectPreset);
+  els.saveRelayBtn.addEventListener("click", () => saveRelay(false));
+  els.skipVerifyBtn.addEventListener("click", () => saveRelay(true));
 }
 
 window.addEventListener("DOMContentLoaded", async () => {

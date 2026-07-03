@@ -30,7 +30,7 @@
         <select id="provider">
           <option value="deepseek">DeepSeek（原生 Anthropic 端点）</option>
           <option value="qwen">通义千问 Qwen（DashScope 翻译）</option>
-          <option value="relay">中转站（任意 Anthropic 兼容端点）</option>
+          <option value="relay">中转站（预设 / 自定义 Anthropic 兼容端点）</option>
         </select>
       </div>
 
@@ -44,13 +44,20 @@
       </div>
 
       <div class="sec relay-only">
-        <label>中转站地址 base_url</label>
-        <div class="row">
+        <label>中转站</label>
+        <select id="relayPreset"></select>
+        <div class="row" style="margin-top:8px">
           <input id="relayBase" type="text" placeholder="https://your-relay/claude" autocomplete="off" spellcheck="false" />
           <button class="btn small" id="fetchModelsBtn">获取模型</button>
         </div>
-        <div class="hint">任意 Anthropic 兼容中转站的根地址（自动补 <code>/v1/messages</code> 与 <code>/v1/models</code>）。填好上面的 Key 与此地址后点「获取模型」。</div>
-        <div id="modelList" class="modellist" hidden></div>
+        <div class="hint" id="relayBaseHint">预设地址已自动填好（只读）。填好上面的 Key 后点「获取模型」。</div>
+        <label style="margin-top:10px">模型</label>
+        <select id="relayModel"></select>
+        <div class="hint" id="relayModelHint"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn small" id="saveRelayBtn">保存并验证</button>
+          <button class="btn small" id="skipVerifyBtn" hidden>跳过验证保存</button>
+        </div>
       </div>
 
       <details class="sec adv tp-only">
