@@ -49,8 +49,9 @@
           <button class="btn small" id="wizFetchBtn">获取模型</button>
         </div>
         <div class="hint" id="wizBaseHint"></div>
-        <label style="margin-top:10px">模型</label>
-        <select id="wizModel"></select>
+        <label style="margin-top:10px" id="wizModelLabel">模型</label>
+        <div id="wizModelInfo" class="modelinfo" hidden></div>
+        <select id="wizModel" aria-labelledby="wizModelLabel"></select>
         <div class="hint" id="wizModelHint"></div>
         <label style="margin-top:10px">API Key / Token</label>
         <input id="wizKey" type="password" placeholder="粘贴 key（只存本地）" autocomplete="off" spellcheck="false" />
@@ -70,8 +71,9 @@
           <button class="btn small" id="connFetchBtn">获取模型</button>
         </div>
         <div class="hint" id="connBaseHint"></div>
-        <label style="margin-top:10px">模型</label>
-        <select id="connModel"></select>
+        <label style="margin-top:10px" id="connModelLabel">模型</label>
+        <div id="connModelInfo" class="modelinfo" hidden></div>
+        <select id="connModel" aria-labelledby="connModelLabel"></select>
         <div class="hint" id="connModelHint"></div>
         <label style="margin-top:10px">API Key / Token</label>
         <input id="connKey" type="password" autocomplete="off" spellcheck="false" />

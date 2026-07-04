@@ -121,3 +121,6 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
 .chip-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip-cat{font-size:10px;color:var(--sub);border:1px solid var(--line);border-radius:6px;
   padding:1px 5px;background:var(--panel)}
+/* 模型只读信息（native 映射说明，替代下拉）。 */
+.modelinfo{font-size:11.5px;color:var(--ink);background:var(--field);border:1px solid var(--line);
+  border-radius:9px;padding:8px 10px;line-height:1.5}
