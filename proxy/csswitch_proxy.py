@@ -128,6 +128,9 @@ RELAY_MODELS = []
 # relay 强制模型 override：面板选了模型时，代理无条件把所有请求模型改成它（覆盖透传）。
 # 由 CSSWITCH_RELAY_MODEL 环境变量在 __main__ 里装配；留空 → None → 维持 PR #4 透传。
 RELAY_FORCE_MODEL = None
+# relay thinking 策略（来自模板 thinking_policy）：由 CSSWITCH_RELAY_THINKING 在 __main__ 装配。
+# None/"adaptive" → auto→adaptive（现状，如 MiniMax）；"enabled" → 强制 enabled（如 Kimi）。
+RELAY_THINKING = None
 # 出站 User-Agent：部分中转站的 WAF 把默认的 "Python-urllib/x.y" 判为 bot 直接 403
 # （byteswarm 实测），故所有上游请求统一带一个非 bot 的 UA。
 UPSTREAM_UA = "CSSwitch/0.2 (+https://github.com/SuperJJ007/CSSwitch)"
@@ -210,6 +213,46 @@ def resolve_model(name):
         if name.startswith(k) or stripped.startswith(k):
             return v
     return PROV["default_model"]
+
+
+def _enabled_budget(max_tokens):
+    """thinking:enabled 需 budget_tokens，且必须 < max_tokens（留 token 给输出）。
+    默认 1024，按 max_tokens 收敛，最低 1（Kimi 真机接受小 budget）。"""
+    default = 1024
+    if isinstance(max_tokens, int) and max_tokens > 0:
+        return max(1, min(default, max_tokens - 1))
+    return default
+
+
+def normalize_thinking(body, prov_name, relay_thinking=None):
+    """thinking 归一化（纯函数，便于测试）。按 provider + relay 策略处理
+    （spec v3 §3.1，真机 §3.5 修正为 per-provider）：
+      (A) 强制 tool_choice(any/tool) 时关 thinking——【仅 deepseek】：flash 默认开思考，
+          即便 thinking=null 也与强制工具冲突，故无条件置 disabled。
+      (B) relay 的 thinking 策略（relay_thinking，来自模板 thinking_policy，
+          经 CSSWITCH_RELAY_THINKING 注入）：
+          - "enabled"（如 Kimi：模型强制 thinking.type=enabled，缺失/auto/其它都 400）
+            → 归一成 {type:enabled, budget_tokens}（保留已有的 enabled）。
+          - "adaptive"/None（默认，如 MiniMax 及 glm/xiaomi/…）→ auto→adaptive（上游认 adaptive）。
+      (C) deepseek 非强制 + auto → adaptive（DeepSeek 认 adaptive）。
+    原地修改并返回 body。"""
+    tc = body.get("tool_choice")
+    forcing = isinstance(tc, dict) and tc.get("type") in ("any", "tool")
+    if forcing and prov_name == "deepseek":
+        body["thinking"] = {"type": "disabled"}
+        return body
+    if prov_name == "relay" and relay_thinking == "enabled":
+        th = body.get("thinking")
+        if not (isinstance(th, dict) and th.get("type") == "enabled"):
+            body["thinking"] = {"type": "enabled",
+                                "budget_tokens": _enabled_budget(body.get("max_tokens"))}
+        return body
+    th = body.get("thinking")
+    if isinstance(th, dict) and th.get("type") == "auto":
+        th = dict(th)
+        th["type"] = "adaptive"
+        body["thinking"] = th
+    return body
 
 
 def clamp_max_tokens(v, model=None):
@@ -644,20 +687,9 @@ class H(BaseHTTPRequestHandler):
         body["model"] = target
         if body.get("max_tokens"):
             body["max_tokens"] = clamp_max_tokens(body["max_tokens"], target)
-        # DeepSeek 的 thinking 归一化：
-        #  - 强制 tool_choice（any/tool，如标题/verdict 生成）：必须显式关 thinking。
-        #    注意 DeepSeek flash 默认 thinking 开，即使请求里 thinking=null 也会与强制工具冲突，故无条件置 disabled。
-        #  - 否则若 thinking.type=="auto"（Science 发的）→ "adaptive"（DeepSeek 只认 adaptive/enabled/disabled）。
-        tc = body.get("tool_choice")
-        forcing = isinstance(tc, dict) and tc.get("type") in ("any", "tool")
-        if forcing:
-            body["thinking"] = {"type": "disabled"}
-        else:
-            th = body.get("thinking")
-            if isinstance(th, dict) and th.get("type") == "auto":
-                th = dict(th)
-                th["type"] = "adaptive"
-                body["thinking"] = th
+        # thinking 归一化（spec v3 §3.1 + 真机 §3.5 per-provider）：(A) forced→disabled 仅 deepseek；
+        # (B) relay 按模板策略：adaptive（MiniMax 等）/ enabled（Kimi）。见 normalize_thinking。
+        normalize_thinking(body, PROV_NAME, RELAY_THINKING)
         stream = bool(body.get("stream"))
         n_tools = len(body.get("tools") or [])
         log(f"POST /v1/messages  {src}->{target} stream={stream} tools={n_tools} "
@@ -857,6 +889,7 @@ if __name__ == "__main__":
         forced = (os.environ.get("CSSWITCH_RELAY_MODEL") or "").strip()
         if forced:
             RELAY_FORCE_MODEL = forced
+        RELAY_THINKING = (os.environ.get("CSSWITCH_RELAY_THINKING") or "").strip() or None
     _up = os.environ.get("CSSWITCH_UPSTREAM_URL")
     if _up:
         PROV = dict(PROV)

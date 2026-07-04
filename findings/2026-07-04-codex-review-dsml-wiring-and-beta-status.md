@@ -45,8 +45,16 @@
 
 `gh api -X PUT .../branches/main/protection`：`allow_force_pushes=false` + `allow_deletions=false` + `enforce_admins=true`；无 required PR / 无 required status check（直提 main 照常，只挡强推与删分支）。以后要强推 main 需先临时关规则。
 
-## 待决清单
-1. v0.3.0-beta.1 撤重发方向：A 真·DSML-only / B 大预览版。
-2. PR #4 底座：自研多 profile / #4。
-3. 自研功能线（DSML / 多 profile / relay）往 main 合的顺序。
-4. 定了后：审 #10 脚本尾段 + 起草 3 条 PR 中文回复（用户过目才发）。
+## 6. 后续（同日）：用户选 B「大预览版」，已执行
+
+- **已发 `v0.3.0-beta.2` 大预览版**（relay + 多 profile + DSML，prerelease + dmg `CSSwitch_0.3.0-beta.2_aarch64.dmg` 3.7M），撤回 beta.1。新增 commit：`acdcdd8`（多 profile 真机/外审修复落库）、`c306607`（release，CHANGELOG 如实描述）、`f02d659`（gitleaks allowlist 修 `sk-definitely-invalid` 假阳性）。全绿 cargo113/clippy0/run_all90/gitleaks0。
+- **已装机 + 清理**：`/Applications/CSSwitch.app` 更新到 beta.2，全机冗余拷贝（桌面测试副本、旧 Acceptance.app、target 构建产物）已删，只留 /Applications 一份。doctor 0/0。
+- **实机测试步骤**：`test/RM_0.3.0-beta.2_ALL_FEATURES.md`（覆盖核心冒烟 / 多 profile RM-04/06/13 / relay 四家 / DSML detect+rewrite+代理层 e2e）。
+- ⚠️ 真实 Science 全程在 8765，未碰。
+
+## 待决清单（更新）
+1. ~~v0.3.0-beta 方向~~ → **已定 B，beta.2 已发**。
+2. **用户真机跑 `test/RM_0.3.0-beta.2_ALL_FEATURES.md`**（多 profile/relay/DSML 全测；登录只用户做）。
+3. 据真机结果决：DSML / 多 profile / relay **往 main 合的顺序**。
+4. PR #4 底座：自研多 profile（建议）/ #4；PR #7 WSL2 收（需 rebase + 铁律审）；PR #10 bio 连接器可收。
+5. 审 #10 脚本尾段 + 起草 3 条 PR 中文回复（用户过目才发）。

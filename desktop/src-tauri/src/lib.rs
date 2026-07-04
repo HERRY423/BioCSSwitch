@@ -70,6 +70,7 @@ struct ProxyLaunch {
     model: String,
     key: String,
     key_env: &'static str,
+    thinking_policy: &'static str,
 }
 
 fn proxy_args_for(p: &config::Profile) -> ProxyLaunch {
@@ -81,6 +82,7 @@ fn proxy_args_for(p: &config::Profile) -> ProxyLaunch {
         model: p.model.clone(),
         key: p.api_key.clone(),
         key_env,
+        thinking_policy: templates::thinking_policy_for(&p.template_id),
     }
 }
 
@@ -438,6 +440,9 @@ fn start_proxy_for(
             cmd.env("CSSWITCH_RELAY_BASE_URL", &launch.base_url);
             if !launch.model.is_empty() {
                 cmd.env("CSSWITCH_RELAY_MODEL", &launch.model);
+            }
+            if !launch.thinking_policy.is_empty() {
+                cmd.env("CSSWITCH_RELAY_THINKING", launch.thinking_policy);
             }
         }
         cmd.stdout(Stdio::from(logf))
@@ -936,8 +941,11 @@ fn nonactive_probe_verdict(outcome: &scratch::ProbeOutcome) -> Result<bool, Stri
         scratch::ProbeOutcome::ModelError(code) => Err(format!(
             "上游拒绝该模型（{code}），连接未保存。请换一个模型或核对 base_url。"
         )),
-        // 无法确认（429/5xx/无响应）：落盘但标记未校验，激活时再验。
-        scratch::ProbeOutcome::Ambiguous(_) | scratch::ProbeOutcome::NoResponse => Ok(false),
+        // 无法确认（405/429/5xx/无响应）：落盘但标记未校验，激活时再验。
+        // Unsupported(405) 并入此类：save 走 Message 探测，405 罕见（端点/base_url 异常），保守标未校验（与旧行为一致）。
+        scratch::ProbeOutcome::Ambiguous(_)
+        | scratch::ProbeOutcome::NoResponse
+        | scratch::ProbeOutcome::Unsupported(_) => Ok(false),
     }
 }
 
@@ -952,6 +960,14 @@ fn should_scratch_candidate(adapter: &str, key: &str, base_url: &str) -> bool {
         return false; // relay 家族缺 base_url → 无从验。
     }
     true
+}
+
+/// 保存前守卫（纯函数，修 P2）：relay 家族（非 native）空 base_url 的候选连接不可用——
+/// 激活必失败（relay 无硬编码端点可回退）。0.3.1 起内置预设 base_url 可编辑，用户清空后
+/// 旧路径会跳过校验、静默落盘并谎报「已保存」。此处在保存时就拦下，绝不落盘。
+/// native(deepseek/qwen) 走各自硬编码官方端点，空 base_url 无妨 → 不拦。
+fn relay_missing_base_url(adapter: &str, base_url: &str) -> bool {
+    !is_native_adapter(adapter) && base_url.trim().is_empty()
 }
 
 /// 对候选连接做一次上游 scratch 校验（非 active 编辑用，P2-d）。起临时代理探完即杀，
@@ -979,6 +995,7 @@ fn scratch_validate_candidate(
             base_url: &launch.base_url,
             key: &launch.key,
             model: Some(&launch.model),
+            relay_thinking: launch.thinking_policy,
         },
         probe_kind_for(&launch.adapter, &launch.model),
     );
@@ -1001,19 +1018,30 @@ fn update_profile_connection(
         let dir = config::default_dir();
         let cfg = config::load_from(&dir).map_err(|e| e.to_string())?;
         // 未命中 id → Err（不静默 Ok）。
-        if cfg.profile_by_id(&id).is_none() {
-            return Err(format!("找不到 profile：{id}"));
+        let mut candidate = cfg
+            .profile_by_id(&id)
+            .cloned()
+            .ok_or_else(|| format!("找不到 profile：{id}"))?;
+        // 生效【后】的候选连接（None=不改则沿用旧值），active/非 active 共用一份。
+        let edit = ConnectionEdit {
+            base_url: base_url.clone(),
+            api_format: api_format.clone(),
+            model: model.clone(),
+            key: key.clone(),
+        };
+        edit.apply(&mut candidate);
+        // 保存前守卫（修 P2）：relay/自定义端点清空 base_url → 不可用连接（激活必失败）。
+        // 校验生效后的 base_url，空则拒绝落盘、绝不谎报「已保存」；native 走硬编码端点，空无妨。
+        if relay_missing_base_url(
+            templates::adapter_for(&candidate.template_id),
+            &candidate.base_url,
+        ) {
+            return Err("中转 / 自定义端点必须填写连接地址（base_url），连接未保存。".to_string());
         }
         if cfg.active_id == id {
             // active（有正在服务的代理）：validate-before-persist —— 新连接作【内存候选】喂进
             // 切换事务（校验→起正式→健康），探活健康【才】连同落盘；失败则磁盘连接零改动、
             // 仍跑旧连接（杜绝「盘新运行旧」，修 P1-4）。
-            let edit = ConnectionEdit {
-                base_url,
-                api_format,
-                model,
-                key,
-            };
             let v =
                 set_active_profile_txn(&app, &state, lifecycle.inner(), &id, false, Some(&edit))?;
             // 连接编辑：committed:false（scratch 分类失败）也如实作为错误上抛（磁盘未改、代理仍跑旧的）。
@@ -1031,17 +1059,6 @@ fn update_profile_connection(
             // 非 active：无正在服务的代理。先对候选做上游 scratch 校验（仅明确拒绝才拦，其余
             // best-effort 落盘并如实标记「未校验」，修 P2-d：贴合设计「校验候选后提交」+ 如实报告），
             // 再落盘（inner 内含格式门 + 覆盖前留底）。
-            let mut candidate = cfg
-                .profile_by_id(&id)
-                .cloned()
-                .ok_or_else(|| format!("找不到 profile：{id}"))?;
-            let edit = ConnectionEdit {
-                base_url: base_url.clone(),
-                api_format: api_format.clone(),
-                model: model.clone(),
-                key: key.clone(),
-            };
-            edit.apply(&mut candidate);
             let validated = scratch_validate_candidate(&app, &candidate)?;
             update_profile_connection_inner(
                 &dir,
@@ -1170,6 +1187,7 @@ fn set_active_profile_txn(
                 base_url: &launch.base_url,
                 key: &launch.key,
                 model: Some(&launch.model),
+                relay_thinking: launch.thinking_policy,
             },
             probe_kind_for(&launch.adapter, &launch.model),
         );
@@ -1183,7 +1201,9 @@ fn set_active_profile_txn(
                 return Ok(json!({ "committed": false,
                     "hint": format!("上游拒绝该模型（{code}），{verb}。请换一个模型或核对 base_url。") }));
             }
-            scratch::ProbeOutcome::Ambiguous(_) | scratch::ProbeOutcome::NoResponse => {
+            scratch::ProbeOutcome::Ambiguous(_)
+            | scratch::ProbeOutcome::NoResponse
+            | scratch::ProbeOutcome::Unsupported(_) => {
                 return Ok(json!({ "committed": false, "can_skip": true,
                     "hint": format!("无法确认（网络/上游繁忙），{verb}。可重试，或用「跳过验证」。") }));
             }
@@ -1411,6 +1431,7 @@ fn fetch_models(app: tauri::AppHandle, req: FetchModelsReq) -> Result<serde_json
             base_url: &base_url,
             key: &key,
             model: None,
+            relay_thinking: tpl.thinking_policy,
         },
         scratch::ProbeKind::Models,
     );
@@ -1446,14 +1467,22 @@ fn fetch_models(app: tauri::AppHandle, req: FetchModelsReq) -> Result<serde_json
         scratch::ProbeOutcome::Auth(code) => {
             Err(format!("上游拒绝（{code}），key 或权限可能有误。"))
         }
-        scratch::ProbeOutcome::ModelError(code) => Ok(json!({
-            "models": merge_and_sort_models(vec![], builtin),
-            "source": "builtin", "error_kind": null, "upstream_status": code
-        })),
-        _ => Ok(json!({
-            "models": merge_and_sort_models(vec![], builtin),
-            "source": "network", "error_kind": "network", "upstream_status": res.status
-        })),
+        // 非 200 且非 Auth：一律 builtin 兜底，但按语义分「发现不支持」(4xx) 与「网络/上游临时」(5xx/429/无响应)，
+        // 供前端区分提示（spec v3 §3.4.3）。绝不把 Auth 混进来掩盖坏 key。
+        other => {
+            let source = scratch::discovery_fallback_source(&other);
+            let error_kind = if source == "network" {
+                json!("network")
+            } else {
+                json!(null)
+            };
+            Ok(json!({
+                "models": merge_and_sort_models(vec![], builtin),
+                "source": source,
+                "error_kind": error_kind,
+                "upstream_status": res.status
+            }))
+        }
     }
 }
 
@@ -1891,10 +1920,11 @@ mod tests {
         create_profile_inner, decide_switch, delete_profile_inner, first_http_url,
         health_timeout_reason, is_main_list_model, key_env_for_adapter, key_fingerprint,
         merge_and_sort_models, nonactive_probe_verdict, parse_host, probe_kind_for,
-        probe_kind_for_model, proxy_args_for, redact, rollback_status_clause, sandbox_home,
-        settings_change_needs_teardown, should_scratch_candidate, should_write_back,
-        skip_scratch_verify, update_profile_connection_inner, update_profile_metadata_inner,
-        upstream_host, ConnectionEdit, SwitchOutcome,
+        probe_kind_for_model, proxy_args_for, redact, relay_missing_base_url,
+        rollback_status_clause, sandbox_home, settings_change_needs_teardown,
+        should_scratch_candidate, should_write_back, skip_scratch_verify,
+        update_profile_connection_inner, update_profile_metadata_inner, upstream_host,
+        ConnectionEdit, SwitchOutcome,
     };
     use crate::config;
 
@@ -2228,10 +2258,12 @@ mod tests {
     }
 
     #[test]
-    fn list_templates_has_seven() {
+    fn list_templates_has_nine() {
         let v = build_list_templates();
-        assert_eq!(v.len(), 7);
+        assert_eq!(v.len(), 9);
         assert!(v.iter().any(|t| t["id"] == "custom"));
+        assert!(v.iter().any(|t| t["id"] == "kimi"));
+        assert!(v.iter().any(|t| t["id"] == "minimax"));
     }
 
     // ---------- 既有纯逻辑不变量（保留） ----------
@@ -2401,6 +2433,19 @@ mod tests {
         assert!(!should_scratch_candidate("relay", "sk-x", ""));
         assert!(should_scratch_candidate("relay", "sk-x", "https://r"));
         assert!(!should_scratch_candidate("deepseek", "", ""));
+    }
+
+    #[test]
+    fn relay_empty_base_url_is_rejected_before_save() {
+        // 修 P2：relay/自定义端点空（或纯空白）base_url → 拦下，不落盘。
+        assert!(relay_missing_base_url("relay", ""));
+        assert!(relay_missing_base_url("glm", "   "));
+        assert!(relay_missing_base_url("custom", ""));
+        // 带地址的 relay 放行。
+        assert!(!relay_missing_base_url("relay", "https://r"));
+        // native 走硬编码端点，空 base_url 无妨 → 不拦。
+        assert!(!relay_missing_base_url("deepseek", ""));
+        assert!(!relay_missing_base_url("qwen", ""));
     }
 
     #[test]

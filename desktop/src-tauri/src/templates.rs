@@ -16,6 +16,7 @@ pub struct Template {
     pub website_url: &'static str,
     pub icon: &'static str,
     pub icon_color: &'static str,
+    pub thinking_policy: &'static str, // relay thinking 策略：adaptive（默认）/ enabled（Kimi）/ ""（native）
 }
 
 pub fn all() -> &'static [Template] {
@@ -29,6 +30,11 @@ pub fn by_id(id: &str) -> Option<&'static Template> {
 /// 未命中 → "relay"（通用 anthropic 兼容透传，双鉴权）。
 pub fn adapter_for(template_id: &str) -> &'static str {
     by_id(template_id).map(|t| t.adapter).unwrap_or("relay")
+}
+
+/// 模板的 relay thinking 策略；未命中 → ""（native/未知不注入，代理走默认 auto→adaptive）。
+pub fn thinking_policy_for(template_id: &str) -> &'static str {
+    by_id(template_id).map(|t| t.thinking_policy).unwrap_or("")
 }
 
 /// 旧固定槽 id → 新 template_id（迁移用）。未知/遗留裸 relay → custom。
@@ -58,6 +64,7 @@ static TEMPLATES: &[Template] = &[
         website_url: "https://platform.deepseek.com",
         icon: "deepseek",
         icon_color: "#1E88E5",
+        thinking_policy: "",
     },
     Template {
         id: "glm",
@@ -72,6 +79,7 @@ static TEMPLATES: &[Template] = &[
         website_url: "https://open.bigmodel.cn",
         icon: "glm",
         icon_color: "#2E6BE6",
+        thinking_policy: "adaptive",
     },
     Template {
         id: "xiaomi",
@@ -86,6 +94,7 @@ static TEMPLATES: &[Template] = &[
         website_url: "https://xiaomimimo.com",
         icon: "xiaomi",
         icon_color: "#FF6900",
+        thinking_policy: "adaptive",
     },
     Template {
         id: "siliconflow",
@@ -100,6 +109,37 @@ static TEMPLATES: &[Template] = &[
         website_url: "https://siliconflow.cn",
         icon: "siliconflow",
         icon_color: "#7C3AED",
+        thinking_policy: "adaptive",
+    },
+    Template {
+        id: "kimi",
+        name: "Kimi（Moonshot）",
+        category: "cn_official",
+        api_format: "anthropic",
+        adapter: "relay",
+        base_url: "https://api.moonshot.cn/anthropic", // 国际站可改 api.moonshot.ai/anthropic
+        base_url_editable: true,
+        requires_model_override: true,
+        builtin_models: &["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+        website_url: "https://platform.moonshot.cn",
+        icon: "kimi",
+        icon_color: "#16182F",
+        thinking_policy: "enabled",
+    },
+    Template {
+        id: "minimax",
+        name: "MiniMax",
+        category: "cn_official",
+        api_format: "anthropic",
+        adapter: "relay",
+        base_url: "https://api.minimaxi.com/anthropic", // 国内站（真机验证：key 有效 + /v1/models 实时发现 200）；国际站改 api.minimax.io
+        base_url_editable: true,
+        requires_model_override: true,
+        builtin_models: &["MiniMax-M2.7", "MiniMax-M3"],
+        website_url: "https://platform.minimaxi.com",
+        icon: "minimax",
+        icon_color: "#E1341E",
+        thinking_policy: "adaptive",
     },
     Template {
         id: "openrouter",
@@ -117,6 +157,7 @@ static TEMPLATES: &[Template] = &[
         website_url: "https://openrouter.ai",
         icon: "openrouter",
         icon_color: "#6467F2",
+        thinking_policy: "adaptive",
     },
     Template {
         id: "qwen",
@@ -131,6 +172,7 @@ static TEMPLATES: &[Template] = &[
         website_url: "https://dashscope.aliyun.com",
         icon: "qwen",
         icon_color: "#615CED",
+        thinking_policy: "",
     },
     Template {
         id: "custom",
@@ -145,6 +187,7 @@ static TEMPLATES: &[Template] = &[
         website_url: "",
         icon: "custom",
         icon_color: "#6B7280",
+        thinking_policy: "adaptive",
     },
 ];
 
@@ -194,7 +237,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn table_has_seven_templates() {
+    fn table_has_nine_templates() {
         let ids: Vec<&str> = all().iter().map(|t| t.id).collect();
         assert_eq!(
             ids,
@@ -203,6 +246,8 @@ mod tests {
                 "glm",
                 "xiaomi",
                 "siliconflow",
+                "kimi",
+                "minimax",
                 "openrouter",
                 "qwen",
                 "custom"
@@ -215,6 +260,8 @@ mod tests {
         assert_eq!(adapter_for("deepseek"), "deepseek");
         assert_eq!(adapter_for("qwen"), "qwen");
         assert_eq!(adapter_for("glm"), "relay");
+        assert_eq!(adapter_for("kimi"), "relay");
+        assert_eq!(adapter_for("minimax"), "relay");
         assert_eq!(adapter_for("openrouter"), "relay");
         assert_eq!(adapter_for("custom"), "relay");
         assert_eq!(adapter_for("unknown-xyz"), "relay"); // 兜底
@@ -224,6 +271,8 @@ mod tests {
     fn api_format_reflects_real_protocol() {
         assert_eq!(by_id("deepseek").unwrap().api_format, "anthropic");
         assert_eq!(by_id("glm").unwrap().api_format, "anthropic");
+        assert_eq!(by_id("kimi").unwrap().api_format, "anthropic");
+        assert_eq!(by_id("minimax").unwrap().api_format, "anthropic");
         assert_eq!(by_id("qwen").unwrap().api_format, "openai_chat");
     }
 
@@ -231,9 +280,23 @@ mod tests {
     fn requires_model_override_matches_capability() {
         assert!(by_id("xiaomi").unwrap().requires_model_override);
         assert!(by_id("siliconflow").unwrap().requires_model_override);
+        assert!(by_id("kimi").unwrap().requires_model_override);
+        assert!(by_id("minimax").unwrap().requires_model_override);
         assert!(!by_id("glm").unwrap().requires_model_override);
         assert!(!by_id("openrouter").unwrap().requires_model_override);
         assert!(by_id("custom").unwrap().requires_model_override);
+    }
+
+    #[test]
+    fn thinking_policy_per_provider() {
+        // 真机 §3.5：Kimi 强制 thinking.type=enabled；MiniMax 及其它 relay 认 adaptive。
+        // native（deepseek/qwen）不经 relay thinking 注入，policy 为空。
+        assert_eq!(by_id("kimi").unwrap().thinking_policy, "enabled");
+        assert_eq!(by_id("minimax").unwrap().thinking_policy, "adaptive");
+        assert_eq!(by_id("glm").unwrap().thinking_policy, "adaptive");
+        assert_eq!(by_id("custom").unwrap().thinking_policy, "adaptive");
+        assert_eq!(by_id("deepseek").unwrap().thinking_policy, "");
+        assert_eq!(by_id("qwen").unwrap().thinking_policy, "");
     }
 
     #[test]
@@ -267,7 +330,15 @@ mod tests {
         // relay 家族预设：地址可编辑（预填官方默认，允许改到 token 套餐 / 区域端点）。
         // 源自用户反馈：小米 MiMo token plan 走 token-plan-cn.xiaomimimo.com/anthropic，
         // 与内置 api.xiaomimimo.com 不同 host，锁死地址 → 上游 401。
-        for id in ["glm", "xiaomi", "siliconflow", "openrouter", "custom"] {
+        for id in [
+            "glm",
+            "xiaomi",
+            "siliconflow",
+            "kimi",
+            "minimax",
+            "openrouter",
+            "custom",
+        ] {
             assert!(
                 by_id(id).unwrap().base_url_editable,
                 "{id} 的 base_url 应可编辑"

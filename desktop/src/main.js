@@ -22,6 +22,8 @@ const MOCK_TEMPLATES = [
   { id: "glm", name: "智谱 GLM", category: "cn_official", api_format: "anthropic", adapter: "relay", base_url: "https://open.bigmodel.cn/api/anthropic", base_url_editable: true, requires_model_override: false, builtin_models: ["glm-4.6", "glm-5", "glm-4.5-air"], icon: "glm", icon_color: "#2E6BE6", website_url: "https://open.bigmodel.cn" },
   { id: "xiaomi", name: "小米 MiMo", category: "cn_official", api_format: "anthropic", adapter: "relay", base_url: "https://api.xiaomimimo.com/anthropic", base_url_editable: true, requires_model_override: true, builtin_models: ["mimo-v2.5-pro"], icon: "xiaomi", icon_color: "#FF6900", website_url: "https://xiaomimimo.com" },
   { id: "siliconflow", name: "硅基流动", category: "cn_official", api_format: "anthropic", adapter: "relay", base_url: "https://api.siliconflow.cn", base_url_editable: true, requires_model_override: true, builtin_models: ["deepseek-ai/DeepSeek-V3", "zai-org/GLM-5.2"], icon: "siliconflow", icon_color: "#7C3AED", website_url: "https://siliconflow.cn" },
+  { id: "kimi", name: "Kimi（Moonshot）", category: "cn_official", api_format: "anthropic", adapter: "relay", base_url: "https://api.moonshot.cn/anthropic", base_url_editable: true, requires_model_override: true, builtin_models: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"], icon: "kimi", icon_color: "#16182F", website_url: "https://platform.moonshot.cn" },
+  { id: "minimax", name: "MiniMax", category: "cn_official", api_format: "anthropic", adapter: "relay", base_url: "https://api.minimaxi.com/anthropic", base_url_editable: true, requires_model_override: true, builtin_models: ["MiniMax-M2.7", "MiniMax-M3"], icon: "minimax", icon_color: "#E1341E", website_url: "https://platform.minimaxi.com" },
   { id: "openrouter", name: "OpenRouter", category: "custom", api_format: "anthropic", adapter: "relay", base_url: "https://openrouter.ai/api", base_url_editable: true, requires_model_override: false, builtin_models: ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.8-fast"], icon: "openrouter", icon_color: "#6467F2", website_url: "https://openrouter.ai" },
   { id: "qwen", name: "通义千问", category: "cn_official", api_format: "openai_chat", adapter: "qwen", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", base_url_editable: false, requires_model_override: false, builtin_models: ["qwen-max", "qwen-plus", "qwen-turbo"], icon: "qwen", icon_color: "#615CED", website_url: "https://dashscope.aliyun.com" },
   { id: "custom", name: "自定义", category: "custom", api_format: "anthropic", adapter: "relay", base_url: "", base_url_editable: true, requires_model_override: true, builtin_models: [], icon: "custom", icon_color: "#6B7280", website_url: "" },
@@ -431,11 +433,16 @@ function renderModelSelect(sel, models, requiresOverride, sourceLabel) {
 // fetch_models 返回体 → 渲染下拉 + 提示（向导与连接编辑共用）。
 function applyFetchResult(sel, requiresOverride, r) {
   const models = (r && r.models) || [];
-  const srcLabel = r && r.source === "live" ? "实时" : r && r.source === "builtin" ? "内置" : "未验证";
+  const src = r && r.source;
+  // unsupported（端点不提供发现，4xx）与 builtin（200 但空）都铺内置，标「内置」；network/未知标「未验证」。
+  const srcLabel = src === "live" ? "实时" : src === "builtin" || src === "unsupported" ? "内置" : "未验证";
   const prev = sel.value;
   renderModelSelect(sel, models, requiresOverride, srcLabel);
   if (prev && models.some((m) => m.id === prev)) sel.value = prev;
-  if (r && r.error_kind === "network") {
+  if (src === "unsupported") {
+    // 端点未提供 /v1/models（如 Kimi）：内置模型可直接选，绝不表述成 key 无效。
+    setMsg("该端点未提供模型列表，已用内置模型（可直接选择保存）。", "ok");
+  } else if (r && r.error_kind === "network") {
     setMsg("未能连上上游验证，已铺内置模型（标「未验证」）。可仍试保存或重试。", "err");
   } else {
     setMsg("已获取 " + models.length + " 个模型（工具✓ 优先）。", "ok");
@@ -631,6 +638,9 @@ async function connSave() {
   if (req && !model) { setMsg("该来源需要选一个模型才能保存。", "err"); return; }
   const editable = t ? t.base_url_editable : true;
   const base = editable ? els.connBase.value.trim() : (t ? t.base_url : els.connBase.value.trim());
+  // 可编辑地址的模板都是中转/自定义端点，必须带 base_url；清空后保存会得到不可用连接（激活必失败）。
+  // 保存前就拦（后端也有同款守卫兜底，修 P2）。
+  if (editable && !base) { setMsg("中转 / 自定义端点必须填写连接地址（base_url）。", "err"); return; }
   const active = p.id === state.active_id;
   // key 留空＝不改（后端语义）；base_url/model 照传。api_format 不在此改（保留模板值）。
   const args = { id: p.id, baseUrl: base, model, key: els.connKey.value.trim() };
