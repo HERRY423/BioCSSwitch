@@ -4,6 +4,24 @@
 
 > **约定**：已修问题从 [`docs/known-issues.md`](docs/known-issues.md)「毕业」到这里（发布即定稿）；未修/进行中留在 known-issues；硬 bug 的根因证据链存在 [`findings/`](findings/)。
 
+## [0.3.2] — 2026-07-04
+
+> 主题：**Science 顶部显示真实模型名 + 新增 Kimi / MiniMax**。修复 relay 家在 Science 模型选择器里笼统显示「claude / opus」的问题（#11），让每个服务商都能选择或自填模型、并在 Science 里显示真实模型名；新增 Kimi（Moonshot）与 MiniMax；各家内置模型更新到官方主流版本。
+
+### 新增 Added
+- **Kimi（Moonshot）与 MiniMax 两家服务商**：均走原生 Anthropic 兼容端点（`api.moonshot.cn/anthropic` / `api.minimaxi.com/anthropic`），零协议转换。thinking 按各家要求注入（Kimi 强制 enabled、MiniMax 走 adaptive）。
+- **为每个服务商选择或自填模型**：模型输入从下拉改为「下拉精选 + 自填」——下拉里是我们维护的各家主流模型，也可以直接填写任意模型名。自定义端点终于有地方填模型名了。
+
+### 修复 Fixed
+- **relay 家在 Science 顶部选择器显示笼统的「claude / opus」（#11，#12 显示部分）**：根因是 Science 的模型面板二进制写死只认 `claude-` 开头的 id。现让 relay 家复用 DeepSeek 已验证的「借壳」做法——代理向 Science 返回一个 `claude-opus-4-8` 外壳、显示名写成你选择的真实模型名，实际推理仍走你选的模型。真机验证：Science 顶部正确显示 `glm-5.2` 等真实名。
+- **中转 / 自定义端点可以保存空的连接地址或空模型**：清空 `base_url` 或不选模型也能「保存成功」、激活时才失败。现在保存前就拦下，前端与后端各有一道守卫，绝不谎报已保存。
+- **各家内置模型过时**：上官方来源逐一核对，更新到当前主流版本（GLM 旗舰 `glm-5.2`、MiniMax 旗舰 `MiniMax-M3`、硅基 `DeepSeek-V4` 系、Kimi `kimi-k2.7-code` 等）。
+
+### 说明 Notes
+- 全 relay 家统一为「选一个模型」：GLM / OpenRouter 从「默认跟随 Science」改为需要指定一个模型。升级时，旧的未指定模型的配置会自动补上该服务商的默认模型，并给出一次提示。
+- 硅基流动的 Anthropic `/v1/messages` 兼容性经真机确认（返回 200，无需协议转换）。
+- 全绿：cargo test 122 / clippy 0 / fmt clean；代理单测 40；真机在隔离沙箱 Science 里验证模型选择器显示。铁律全程守住（真实 `~/.claude-science` 与 8765 端口未碰）。
+
 ## [0.3.1] — 2026-07-04
 
 > 主题：**内置预设支持自定义 base_url**。修用户反馈的小米 MiMo「token plan」401。
