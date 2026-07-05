@@ -24,12 +24,15 @@ from . import (
     multi_turn,
     omics,
     phi,
+    privacy_redteam,
+    safety_redteam,
     target_discovery,
 )
 
 _MODULES = [
     lit_review, clinical_trials, target_discovery, drug_repurposing,
     omics, evidence_audit, phi, json_stability, multi_turn,
+    safety_redteam, privacy_redteam,
 ]
 
 CATEGORIES: List[str] = [m.CATEGORY for m in _MODULES]

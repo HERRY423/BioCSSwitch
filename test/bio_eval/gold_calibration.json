@@ -1,0 +1,26 @@
+{
+  "schema": "bio_eval/gold-calibration/1",
+  "policy": {
+    "strict_release_requires": "approved",
+    "allowed_statuses": [
+      "needs_expert_review",
+      "approved",
+      "rejected",
+      "superseded"
+    ]
+  },
+  "cases": {
+    "dr_metformin_mech": {
+      "status": "needs_expert_review",
+      "reviewer": "",
+      "reviewed_at": "",
+      "notes": "Gold entities cover metformin mechanism terms. Needs pharmacology / clinical pharmacology review before strict release."
+    },
+    "ea_batch_verify": {
+      "status": "needs_expert_review",
+      "reviewer": "",
+      "reviewed_at": "",
+      "notes": "Gold PMIDs should be checked by an evidence-synthesis reviewer before strict release."
+    }
+  }
+}

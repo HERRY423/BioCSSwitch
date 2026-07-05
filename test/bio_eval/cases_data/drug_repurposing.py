@@ -22,6 +22,8 @@ CASES = [
             "primary_tool": "compound_search",
             "query_keywords": ["metformin"],
             "gate": ["tool_invoked"],
+            # 专家金标准：二甲双胍的经典分子机制线索（AMPK / 复合物 I），不在 prompt 里
+            "gold": {"must_mention": ["AMPK", "complex I", "呼吸链复合物", "线粒体"], "mode": "any"},
         },
     },
     {

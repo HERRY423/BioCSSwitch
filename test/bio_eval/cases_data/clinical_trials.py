@@ -46,6 +46,7 @@ CASES = [
         "rubric": {
             "expect_tools": ["get_trial_details"],
             "require_grounding": True,
+            "require_semantic": True,  # 报告的入组数/期别等数字必须来自工具返回，不能编
             "gate": ["tool_invoked"],
         },
     },

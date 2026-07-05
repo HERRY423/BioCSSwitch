@@ -24,7 +24,7 @@
 //!     - schema：`{"mcpServers": {"<name>": {"command", "args", "env"}}}`
 //!   若逆向后发现 Science 用别的路径 / schema，改 `MCP_CONFIG_REL` + `write_mcp_config`。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -114,6 +114,54 @@ pub fn list_packs(asset_root: &Path) -> Vec<PackDef> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
+}
+
+fn collect_pack_and_deps(
+    id: &str,
+    by_id: &BTreeMap<String, &PackDef>,
+    stack: &mut Vec<String>,
+    active: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if active.contains(id) {
+        return Ok(());
+    }
+    if let Some(pos) = stack.iter().position(|x| x == id) {
+        let mut cycle = stack[pos..].to_vec();
+        cycle.push(id.to_string());
+        return Err(format!("pack dependency cycle detected: {}", cycle.join(" -> ")));
+    }
+    let pack = by_id
+        .get(id)
+        .ok_or_else(|| format!("enabled pack or dependency '{id}' is not installed"))?;
+
+    stack.push(id.to_string());
+    for dep in &pack.depends_on {
+        collect_pack_and_deps(dep, by_id, stack, active)?;
+    }
+    stack.pop();
+    active.insert(id.to_string());
+    Ok(())
+}
+
+fn resolve_enabled_pack_ids(
+    all: &[PackDef],
+    enabled: &BTreeMap<String, bool>,
+) -> Result<(BTreeSet<String>, Vec<String>), String> {
+    let by_id: BTreeMap<String, &PackDef> =
+        all.iter().map(|p| (p.id.clone(), p)).collect();
+    let explicit: BTreeSet<String> = enabled
+        .iter()
+        .filter_map(|(id, on)| if *on { Some(id.clone()) } else { None })
+        .collect();
+    let mut active = BTreeSet::new();
+    for id in &explicit {
+        collect_pack_and_deps(id, &by_id, &mut Vec::new(), &mut active)?;
+    }
+    let warnings = active
+        .difference(&explicit)
+        .map(|id| format!("{id} auto-enabled because a selected pack depends on it"))
+        .collect();
+    Ok((active, warnings))
 }
 
 fn python3() -> Result<String, String> {
@@ -270,6 +318,7 @@ pub fn apply(
 ) -> Result<(Vec<String>, Vec<String>), String> {
     let all = list_packs(asset_root);
     let py = python3()?;
+    let (active_pack_ids, dep_warnings) = resolve_enabled_pack_ids(&all, enabled)?;
 
     // 保留【非本项目管理的】server（用户可能自加了别的 MCP）。归属判断：
     //   1) `bio-` 前缀 → 我们的
@@ -281,7 +330,7 @@ pub fn apply(
         .and_then(|v| v.as_object_mut())
         .ok_or("mcp-servers.json schema 异常：mcpServers 不是 object")?;
 
-    let managed_aliases: std::collections::HashSet<String> = all
+    let managed_aliases: HashSet<String> = all
         .iter()
         .flat_map(|p| p.servers.iter())
         .flat_map(|s| s.aliases.clone())
@@ -299,10 +348,10 @@ pub fn apply(
     }
 
     let mut applied: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
+    let mut warnings = dep_warnings;
 
     for pack in &all {
-        let on = enabled.get(&pack.id).copied().unwrap_or(false);
+        let on = active_pack_ids.contains(&pack.id);
         if on {
             let mut missing = Vec::new();
             for k in &pack.requires_env {
@@ -357,7 +406,7 @@ pub fn purge_bio_from_mcp(asset_root: &Path, sandbox_data_dir: &Path) -> io::Res
         return Ok(());
     }
     let all = list_packs(asset_root);
-    let managed_aliases: std::collections::HashSet<String> = all
+    let managed_aliases: HashSet<String> = all
         .iter()
         .flat_map(|p| p.servers.iter())
         .flat_map(|s| s.aliases.clone())

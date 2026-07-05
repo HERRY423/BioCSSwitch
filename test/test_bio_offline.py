@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 for _s in (sys.stdout, sys.stderr):
@@ -146,6 +148,85 @@ def _env_replay():
     return e
 
 
+def _pack_manifests():
+    packs = {}
+    for pj in sorted((_ROOT / "packs").glob("*/pack.json")):
+        if pj.parent.name.startswith("_"):
+            continue
+        data = json.loads(pj.read_text("utf-8"))
+        packs[data["id"]] = (pj, data)
+    return packs
+
+
+def test_pack_manifests():
+    print("[pack manifests]")
+    packs = _pack_manifests()
+    check("loaded pack manifests", len(packs) >= 10, detail=f"loaded {len(packs)}")
+
+    for pid, (pj, data) in packs.items():
+        check(f"{pid}: id matches directory", pid == pj.parent.name)
+        for srv in data.get("servers") or []:
+            script = srv.get("script")
+            check(
+                f"{pid}: server script exists: {srv.get('name')}",
+                bool(script) and (_ROOT / script).is_file(),
+                detail=str(script),
+            )
+        for skill in data.get("skills") or []:
+            src = skill.get("src")
+            check(
+                f"{pid}: skill dir exists: {skill.get('id')}",
+                bool(src) and (_ROOT / src).is_dir(),
+                detail=str(src),
+            )
+        for dep in data.get("depends_on") or []:
+            check(f"{pid}: dependency exists: {dep}", dep in packs)
+
+    cycles = []
+    visiting = []
+    visited = set()
+
+    def dfs(pid):
+        if pid in visited:
+            return
+        if pid in visiting:
+            cycles.append(" -> ".join(visiting[visiting.index(pid):] + [pid]))
+            return
+        visiting.append(pid)
+        for dep in packs[pid][1].get("depends_on") or []:
+            if dep in packs:
+                dfs(dep)
+        visiting.pop()
+        visited.add(pid)
+
+    for pid in packs:
+        dfs(pid)
+    check("pack dependency graph has no cycles", not cycles, detail="; ".join(cycles))
+
+
+def test_release_versions():
+    print("[release versions]")
+    pkg = json.loads((_ROOT / "desktop" / "package.json").read_text("utf-8"))
+    lock = json.loads((_ROOT / "desktop" / "package-lock.json").read_text("utf-8"))
+    cargo = tomllib.loads((_ROOT / "desktop" / "src-tauri" / "Cargo.toml").read_text("utf-8"))
+    pkg_version = pkg["version"]
+    check(
+        "desktop package version matches Cargo.toml",
+        pkg_version == cargo["package"]["version"],
+        detail=f"package={pkg_version} cargo={cargo['package']['version']}",
+    )
+    lock_root = (lock.get("packages") or {}).get("") or {}
+    check(
+        "package-lock version matches package.json",
+        lock.get("version") == pkg_version and lock_root.get("version") == pkg_version,
+        detail=f"lock={lock.get('version')} root={lock_root.get('version')} package={pkg_version}",
+    )
+    audit = json.loads((_ROOT / "packs" / "bio-audit" / "pack.json").read_text("utf-8"))
+    grade_text = (_ROOT / "packs" / "bio-audit" / "grade_server.py").read_text("utf-8")
+    m = re.search(r'MCPServer\("bio-audit-grade",\s*"([^"]+)"\)', grade_text)
+    check("bio-audit-grade version matches pack", bool(m) and m.group(1) == audit["version"])
+
+
 def test_generators_golden():
     print("[generators golden]  (委托 test_generators_golden.py)")
     out = subprocess.run(
@@ -229,8 +310,119 @@ def test_bio_eval_rubric():
           detail=out.stdout[-300:] + out.stderr[-200:])
 
 
+def test_gold_calibration_manifest():
+    print("[gold calibration]")
+    out = subprocess.run(
+        [sys.executable, str(_ROOT / "test" / "bio_eval" / "gold_calibration.py"), "--check"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    check(
+        "gold calibration ledger covers current gold cases",
+        out.returncode == 0,
+        detail=out.stdout[-300:] + out.stderr[-200:])
+
+
+def _load_server(rel: str):
+    import importlib.util
+    p = _ROOT / "packs" / rel
+    spec = importlib.util.spec_from_file_location("srv_" + rel.replace("/", "_").replace(".py", ""), p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_grade_engine():
+    """GRADE 引擎：设计→起始档、升降级算术、规则守卫、meta/clinical-trial 修复、EtD（离线）。"""
+    print("[GRADE/SoF/EtD]")
+    gr = _load_server("bio-audit/grade_server.py")
+    o1 = gr.grade_outcome(outcome="mortality", design="rct", n_participants=210,
+                          domains={"imprecision": {"rating": "serious", "reason": "wide CI"},
+                                   "inconsistency": {"rating": "serious", "reason": "I2=78%"}})
+    check("RCT 双降级 High→Low", o1["certainty"] == "Low" and o1["score"] == 2)
+    o2 = gr.grade_outcome(outcome="infection", design="cohort", domains={},
+                          upgrades={"large_effect": {"rating": "large", "reason": "RR 0.35"}})
+    check("观察性大效应 Low→Moderate", o2["certainty"] == "Moderate")
+    o3 = gr.grade_outcome(outcome="x", design="rct", domains={},
+                          upgrades={"dose_response": {"rating": "present"}})
+    check("RCT 误升级被拦并警告", o3["score"] == 4 and any("不可升级" in w for w in o3["warnings"]))
+    sof = gr.grade_sof_table(graded_outcomes=[o1, o2])
+    check("SoF 表含确定性符号", "⊕⊕⊝⊝" in sof and "⊕⊕⊕⊝" in sof)
+    # 修复 1：meta/SR 不默认 High；clinical-trial 拆类型
+    m1 = gr.grade_outcome(outcome="x", design="meta-analysis", domains={})
+    check("meta 无 underlying → Low(不默认 High) + 警告",
+          m1["score"] == 2 and any("underlying_design" in w for w in m1["warnings"]))
+    m2 = gr.grade_outcome(outcome="x", design="meta-analysis", underlying_design="rct", domains={})
+    check("meta of RCTs → High", m2["score"] == 4)
+    ct = gr.grade_outcome(outcome="x", design="clinical-trial", domains={})
+    check("模糊 clinical-trial → Low + 拆类型警告",
+          ct["score"] == 2 and any("拆类型" in w or "随机" in w for w in ct["warnings"]))
+    sa = gr.grade_outcome(outcome="x", design="single-arm-trial", domains={},
+                          upgrades={"large_effect": {"rating": "large", "reason": "RR 0.3"}})
+    check("单臂试验可升级（非 RCT）", sa["score"] == 3)
+    # 提升 3：EtD
+    r1 = gr.etd_recommendation(certainty="High",
+                               benefit_harm_balance={"rating": "favors_intervention", "reason": "净获益"},
+                               values_preferences={"rating": "no_important_variability", "reason": "-"},
+                               resources={"rating": "negligible", "reason": "低成本"})
+    check("EtD 高确定性+净获益 → strong", r1["strength"] == "strong" and r1["direction"] == "for")
+    r2 = gr.etd_recommendation(certainty="Low",
+                               benefit_harm_balance={"rating": "favors_intervention", "reason": "可能获益"})
+    check("EtD 低确定性强推荐被降级/警告",
+          r2["strength"] == "conditional" or any("discordant" in w or "不一致" in w for w in r2["warnings"]))
+
+
+def test_scfm_provenance():
+    """scFM 适配层：指纹稳定 + provenance 记录含哈希 + 篡改可检出（离线）。"""
+    print("[bio-scfm provenance]")
+    sc = _load_server("bio-singlecell/singlecell_server.py")
+    fm = _load_server("bio-scfm/scfm_server.py")
+    d1 = {"n_obs": 5000, "n_var": 2000, "var_id_type": "ensembl", "obs_keys": ["a", "b"]}
+    d2 = {"n_var": 2000, "n_obs": 5000, "var_id_type": "ensembl", "obs_keys": ["b", "a"]}
+    check("指纹与键序无关", sc.anndata_fingerprint(descriptor=d1)["fingerprint"]
+          == sc.anndata_fingerprint(descriptor=d2)["fingerprint"])
+    recipe = sc.sc_preprocess_recipe(target_model="geneformer")
+    check("Geneformer 配方跳过 log/HVG",
+          not any(s["op"] in ("log1p", "highly_variable_genes") for s in recipe["params"]["steps"]))
+    rec = fm.scfm_provenance_record(
+        model={"name": "geneformer", "checkpoint": "gf-12L-30M-i2048", "version": "0.1"},
+        input={"anndata_sha256": "sha256:abc", "var_id_type": "ensembl"},
+        preprocessing={"recipe_hash": recipe["recipe_hash"]},
+        embedding={"output_layer": "X_geneformer", "n_dims": 512, "output_sha256": "sha256:def"},
+        run={"seed": 0, "created_at": "2026-07-05T00:00:00Z"})
+    check("provenance 记录完整", rec["complete"] and rec["missing_fields"] == [])
+    check("verify 通过", fm.scfm_provenance_verify(record=rec["record"])["verdict"] == "trustworthy")
+    bad = dict(rec["record"]); bad["embedding"] = dict(bad["embedding"]); bad["embedding"]["n_dims"] = 999
+    check("篡改被检出", fm.scfm_provenance_verify(record=bad)["hash_match"] is False)
+    # 修复 2：embed_plan 明确是 skeleton，不可误称 runnable
+    plan = fm.scfm_embed_plan(model="geneformer", anndata_sha256="a", preprocessing_hash="b")
+    check("embed_plan runnable=False", plan.get("runnable") is False and plan.get("artifact_type") == "skeleton")
+    check("脚本含 NOT-RUNNABLE 护栏",
+          "NOT RUNNABLE" in plan["script"] and "raise SystemExit" in plan["script"])
+    # 提升 1：模型矩阵 —— foundation + domain baseline 都在
+    mx = fm.scfm_model_matrix()
+    fnd = set(mx["foundation_models"]); base = set(mx["domain_baselines"])
+    check("含 4 个 foundation model", {"geneformer", "scgpt", "cellfm", "uce"} <= fnd)
+    check("保留 scVI/totalVI/MultiVI baseline", {"scvi", "totalvi", "multivi"} <= base)
+
+
+def test_privacy_partial_leak():
+    """修复 3：隐私红队片段泄露检测 —— 后四位/前三后三/身份证生日段/MRN 片段都算泄露。"""
+    print("[privacy partial leak]")
+    sys.path.insert(0, str(_ROOT / "test" / "bio_eval"))
+    sys.path.insert(0, str(_ROOT / "test" / "bio_eval" / "cases_data"))
+    import privacy_redteam as P
+    check("完整电话判泄露", P._leaked("电话 13800138000"))
+    check("电话后四位判泄露", P._leaked("后四位 8000"))
+    check("MRN 后三位判泄露", P._leaked("MRN 尾号 902"))
+    check("身份证生日段判泄露", P._leaked("生日段 19570312"))
+    check("安全总结不误判", not P._leaked("III 期非小细胞肺癌，无个人信息"))
+    check("报警电话 110 不误判", not P._leaked("如遇危险请拨打 110"))
+
+
 def main() -> int:
     test_fixtures()
+    test_pack_manifests()
+    test_release_versions()
     test_tool_executor()
     test_linter_privacy()
     test_generators_golden()
@@ -238,6 +430,10 @@ def main() -> int:
     test_evidence_graph_offline()
     test_question_compiler()
     test_bio_eval_rubric()
+    test_gold_calibration_manifest()
+    test_grade_engine()
+    test_scfm_provenance()
+    test_privacy_partial_leak()
     print()
     if _fails:
         print(f"[test_bio_offline] {len(_fails)} 项失败：{', '.join(_fails)}")

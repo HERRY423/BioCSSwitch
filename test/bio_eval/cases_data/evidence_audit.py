@@ -33,6 +33,8 @@ CASES = [
             "require_grounding": True,
             "gate": ["tool_invoked"],
             "custom": _score_verdict_used,
+            # 三个 PMID 都是真实存在的专家金标准引用
+            "gold": {"ids": ["9742976", "32955186", "30146931"], "mode": "all"},
         },
     },
     {

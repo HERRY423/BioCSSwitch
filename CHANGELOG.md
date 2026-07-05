@@ -4,6 +4,39 @@
 
 > **约定**：已修问题从 [`docs/known-issues.md`](docs/known-issues.md)「毕业」到这里（发布即定稿）；未修/进行中留在 known-issues；硬 bug 的根因证据链存在 [`findings/`](findings/)。
 
+## [Unreleased] — 生医研究扩展（GRADE/scFM/benchmark 加固 + EtD/模型矩阵/provider 矩阵）
+
+> 主题：修三处正确性问题，再叠三层能力。全部离线可测（`test/test_bio_offline.py` 现 62 项断言全绿）。
+
+### 修复 Fixed
+- **GRADE 起始确定性**：meta-analysis / systematic-review **不再默认 High**——起始档取决于 `underlying_design`（meta of RCTs→High，meta of observational→Low）；未声明则保守按 Low + 警告。模糊的 `clinical-trial` 拆类型：随机对照→High，单臂/非随机→Low（按观察性，且**可升级**）；无法识别的设计词保守按 Low + 提示。`_start_certainty` 返回 (起始档, 警告, is_rct)。
+- **scFM 脚本真实性**：`scfm_embed_plan` 明确降级为 skeleton——返回 `artifact_type=skeleton` / `runnable=false`，生成脚本带 NOT-RUNNABLE 横幅 + `raise SystemExit` 护栏 + TODO/伪代码标注，工具描述也改口"不产出可直接运行的脚本"。杜绝把模板误当 runnable。
+- **隐私红队片段泄露**：`privacy_redteam._leaked` 从"只查完整串"升级为查片段集——完整 PHI、后四位、前三/后三位、身份证生日段（第 7-14 位）、MRN 片段都判泄露；同时剔除会与安全内容碰撞的片段（身份证前三位 110/120 撞报警/急救电话）。
+
+### 新增 Added
+- **bio-scfm 模型矩阵**：registry 从 Geneformer/scGPT 扩到 **4 个 foundation model（Geneformer、scGPT、CellFM、UCE）** + **3 个 domain-specific baseline（scVI、totalVI、MultiVI，每份数据自训 VAE，保留作诚实对照）**，每个标 `category`、输入 ID 类型、模态。新增 `scfm_model_matrix` 工具给对比视图 + "跑 foundation 至少配一个 baseline"的指导。`scfm_embed_plan` 支持全部 7 个模型（baseline 脚本走 scvi-tools API 伪代码）。
+- **bio_eval provider 矩阵**：`run.py --matrix` 把 `results/` 里各 provider（label）汇成对比矩阵——每列 overall / **红队分（safety+privacy 均值）** / **工具调用分（tool_invoked 均值）** / **稳定性（--repeat N 的分数标准差）** / **成本**（内置价目或 `--price-in/out`）。配合 `--repeat 3` 得到"哪个 provider 又准又稳又便宜又安全"的横比。
+- **GRADE EtD 层**：新增 `etd_recommendation`——certainty 只是证据确定性，推荐强度（strong / conditional）还要看获益/危害平衡、价值观与偏好、资源/成本、公平性/可接受性/可行性。工具确定性地映射到推荐方向+强度，守卫"低确定性上的强推荐"（GRADE 不一致推荐，需符合特殊情形否则降 conditional），措辞遵循 recommend/suggest 惯例。`grade-sof` skill 增 EtD 步 + 起始档拆类型说明。
+
+### 变更 Changed
+- `test/test_bio_offline.py` 增覆盖：GRADE meta/clinical-trial 修复 + 单臂可升级 + EtD、scFM skeleton 护栏 + 模型矩阵、隐私片段泄露（含 110 不误判）；`run.py --selftest` 增部分泄露判 0 校验。工具总数 75。
+
+## [Unreleased] — 生医研究扩展（GRADE / scFM 适配层 / 回归 benchmark）
+
+> 主题：让系统能给出「顶级医学级」的证据确定性、把单细胞基础模型接成可复现的计算工具、把 benchmark 做成能证明"系统变强"的回归基准。三条主线，全部离线可测。
+
+### 新增 Added
+- **1. bio-audit 升级为 GRADE / SoF 引擎**：新增 `grade_server.py`（MCP server `bio-audit-grade`）。`grade_outcome` 按 GRADE 给**单个 outcome** 的证据确定性评级——起始档由设计定（RCT→High / 观察性→Low），模型对 5 个降级域（偏倚/不一致/间接/不精确/发表偏倚）+ 3 个升级域（大效应/剂量反应/残余混杂）给判断与理由，**工具确定性地算完算术**，输出四档确定性（⊕⊕⊕⊕ High … ⊕⊝⊝⊝ Very Low）+ 逐域「为什么」+ GRADE 规则守卫（RCT 不可升级、无理由降级告警、样本过小提示不精确性）。`grade_sof_table` 产出 Summary of Findings 表；`grade_explain` 给域定义速查。配 `grade-sof` skill。
+- **2. 新增 bio-singlecell + bio-scfm 两个 pack（scFM 计算工具适配层）**：把 Geneformer / scGPT 当**编码器工具**而非聊天模型。新增 `_lib/provenance.py`（规范化 JSON + sha256 内容哈希）。
+  - `bio-singlecell`：`anndata_fingerprint`（元数据指纹 + 生成算真·内容哈希的本地代码）、`sc_preprocess_recipe`（模型对口的确定性 scanpy 配方 + `recipe_hash` + 脚本；Geneformer 跳过 log/HVG，scGPT 走 HVG+binning）、`sc_qc_thresholds`（MAD-based 可解释阈值）。配 `single-cell-prep` skill。
+  - `bio-scfm`：`scfm_registry`（钉版本 checkpoint + 输入要求）、`scfm_embed_plan`（产出可复现 embedding 脚本 + provenance 骨架）、`scfm_provenance_record`（构造带 `provenance_hash` 的规范记录）、`scfm_provenance_verify`（重算哈希 + 查必填 → trustworthy / not_reproducible）。**铁律：任何 embedding 必须附 provenance——输入 AnnData 内容哈希、预处理参数哈希、模型版本、embedding 维度/输出哈希/pooling、seed/环境**。配 `scfm-embed` skill。
+- **3. bio_eval 做成真正的回归 benchmark**：从 9 类 ~49 case 扩到 **11 类 60 case**，新增两个红队类：`safety_redteam`（危险用药/致死剂量/停药施压/编造治愈的对抗提示 → 奖励拒答/护栏/循证）、`privacy_redteam`（诱导回显 PHI / 把 PHI 塞进检索参数外泄 / 重建脱敏 → 检查答复+工具调用参数都不泄露原始 PHI）。rubric 新增维度：`gold_match`（专家金标准 ID/必提实体命中）、`semantic_grounding`（答复里的数字事实/命名实体是否真有工具出处——抓"ID 对但数字编造"）。`run.py` 新增 `--repeat`（跑多次测稳定性/方差）+ token 用量/延迟采集 + **provider 成本×稳定性矩阵**（内置 deepseek/qwen/glm/kimi/claude 价目，`--price-in/out` 可覆盖）。
+
+### 变更 Changed
+- `test/test_bio_offline.py` 再加 2 组离线断言（GRADE 引擎算术+规则守卫、scFM 指纹稳定性+provenance 篡改检出）；`run.py --selftest` 增 gold_match / semantic_grounding / 安全红队 / 隐私红队 6 项校验。
+- `tool_executor.py` 加载 grade / bio-singlecell / bio-scfm 三个 server（共 73 个工具可离线执行）。
+- `evidence-audit` skill 之外，bio-audit pack 现含 `grade-sof` skill（version 0.2.0，两个 server）。
+
 ## [Unreleased] — 生医研究扩展（证据图 / 不确定性 / 编译器 / benchmark）
 
 > 主题：从"引用真不真"升级到"结论站不站得住 + 盲区在哪"。四条主线，全部离线可测（并入 `test/test_bio_offline.py`）。

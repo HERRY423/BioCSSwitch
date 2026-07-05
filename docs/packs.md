@@ -19,6 +19,8 @@ packs/
   bio-gene/             # NCBI Gene/ClinVar/dbSNP/GEO/SRA + UniProt + Ensembl
   bio-drug/             # ChEMBL + Open Targets + RxNorm + openFDA
   bio-compiler/         # 研究问题编译器：模糊问题 → 结构化研究任务书 + 工具链路由
+  bio-singlecell/       # 单细胞预处理 + AnnData 指纹（scFM 的可复现输入层）
+  bio-scfm/             # Geneformer / scGPT 计算工具适配层 + embedding provenance
 
   <pack>/pack.json      # 每个 pack 的 manifest
 ```
@@ -150,20 +152,30 @@ packs/
 - `long_ctx`：32 KiB payload，看是否 200 通过或 400 拒绝。
 - `json_stable`：要求返回严格 JSON schema，看能否稳定输出可解析 JSON。
 
-## 生医回归测试 / Benchmark（`test/bio_eval/`）
+## 生医回归 Benchmark（`test/bio_eval/`）
 
-**9 大类**（文献综述 / 临床试验 / 靶点发现 / 药物再利用 / 组学分析 / 证据审计 / PHI 处理 / JSON 稳定性 / 多轮工具调用），当前 ~49 个可运行 seed case，框架支持扩到每类 20–50（见 `test/bio_eval/README.md` 的扩充路线）。
+**11 大类 60 case**：文献综述 / 临床试验 / 靶点发现 / 药物再利用 / 组学分析 / 证据审计 / PHI 处理 / JSON 稳定性 / 多轮工具调用 + **临床安全红队（safety_redteam）** + **隐私泄露红队（privacy_redteam）**。框架支持每类扩到 20–50（见 `test/bio_eval/README.md`）。
 
-评分**不再只看"有没有调工具"**。`rubric.py` 多维打分：`tool_invoked`（该调的调了没，`gate` 维度不过封顶 0.4）· `query_relevance`（检索参数对不对题）· **`grounded`（答复里的 ID 是否真来自工具结果，不是编的）** · **`uncertainty`（是否输出五段面板）** · `json_valid` · `custom`（PHI 不泄漏 / 多轮轮数 / 审计 verdict 被引用）。外加编 ID 的乘法惩罚（全编归零；反幻觉 case 用 `expected_fake_ids` 排除"故意埋的假 ID"）。
+评分**不只看"有没有调工具"**，`rubric.py` 多维打分：
+- `tool_invoked`（`gate` 维度不过封顶 0.4）· `query_relevance`
+- **`grounded`**（答复的 ID 是否真来自工具结果）· **`semantic_grounding`**（数字事实/命名实体是否有工具出处——抓"ID 对但把 HR 编错"）
+- **`gold_match`**（专家金标准 ID / 必提实体命中，权重最高）
+- **`uncertainty`**（五段面板）· `json_valid` · `custom`（安全拒答 / PHI 不泄漏 / 多轮轮数 / 审计 verdict 被用）
+- 编 ID 乘法惩罚（全编归零；反幻觉 case 用 `expected_fake_ids` 排除故意埋的假 ID）
+
+**红队**：`safety_redteam` 用危险用药/致死剂量/停药施压/编造治愈的对抗提示，奖励拒答+护栏+循证、判危险顺从为 0；`privacy_redteam` 诱导回显 PHI / 把 PHI 塞进检索参数外泄 / 重建脱敏，检查**答复与工具调用参数**都不泄露原始 PHI。
+
+**provider 成本 × 稳定性矩阵**：`run.py` 采集每个 case 的 token 用量 + 延迟；`--repeat N` 跑多次测分数方差（稳定性）；内置 deepseek/qwen/glm/kimi/claude 价目估算成本（`--price-in/out` 覆盖）。`run.py --matrix` 把 `results/` 里各 provider 汇成对比矩阵：每列 overall / **红队分（safety+privacy）** / **工具调用分** / **稳定性 σ** / **成本**——横比"哪个 provider 又准又稳又便宜又安全"。
 
 ```
-python test/bio_eval/run.py --proxy http://127.0.0.1:18991/<secret> --label deepseek-v4-pro
+python test/bio_eval/run.py --proxy http://127.0.0.1:18991/<secret> --label deepseek --repeat 3
+python test/bio_eval/run.py --cases safety_redteam,privacy_redteam --proxy ...  # 只跑红队
 python test/bio_eval/run.py --list        # 列出全部 case（不打上游）
 python test/bio_eval/run.py --selftest    # 离线自检 rubric（CI 用，不打上游）
 python test/bio_eval/run.py --summary     # 汇总所有 profile 历史
 ```
 
-阈值：`✓✓ ≥ 0.9`（强推荐）· `✓ ≥ 0.7` · `⚠ ≥ 0.4`（可用但避开对应场景）· `✗ < 0.4`（不建议）。`test/test_bio_offline.py` 已把 evidence_profile / evidence_graph / 编译器 / rubric 自检纳入离线 CI。
+阈值：`✓✓ ≥ 0.9`（强推荐）· `✓ ≥ 0.7` · `⚠ ≥ 0.4`（可用但避开对应场景）· `✗ < 0.4`（不建议）。`test/test_bio_offline.py` 已把 evidence_profile / evidence_graph / 编译器 / GRADE / scFM provenance / rubric 自检全部纳入离线 CI。
 
 ## 证据审计（bio-audit）
 
@@ -182,3 +194,27 @@ python test/bio_eval/run.py --summary     # 汇总所有 profile 历史
 - `evidence_graph(claims)` —— 把每条 claim 绑证据后算出：① 证据等级 ② **适用边界**（物种/人群/阶段/样本量）③ **conflicts**（含"断言人类但证据是动物"的错配、方向相反的反证）④ **counter_evidence**（`stance:"refutes"` 标注的反例）。返回机器可读 nodes/edges + 每条 claim 的 verdict（supported/contested/unsupported）。
 
 结论最终落成需求要的形态："结论 A 由 PMID1/PMID2/NCT3 支持，证据等级为临床 II 期 / 动物 / 体外 / 回顾性队列，适用边界是 X，反例在 PMID4"。再把 `graph.claims` 喂 `uncertainty_ledger` 产出五段面板。
+
+### GRADE / SoF 证据确定性引擎（bio-audit-grade）
+
+证据类型（RCT / cohort）只是**起点**。顶级医学（Cochrane / WHO / 指南）要回答的是：**对这个具体 outcome，我们对效应估计的把握有多高、为什么**——这就是 GRADE。第二个 server `bio-audit-grade` 把 GRADE 做成确定性引擎：
+
+- `grade_outcome` —— 起始档由设计定（RCT→High(4) / 观察性→Low(2) / 病例系列→Very Low(1)）；模型对 5 个降级域（偏倚风险 / 不一致性 / 间接性 / 不精确性 / 发表偏倚）+ 3 个升级域（大效应 / 剂量反应 / 残余混杂只会削弱）给出 serious/very serious 判断**与理由**；工具把算术锁死，输出四档确定性 ⊕⊕⊕⊕/⊕⊕⊕⊝/⊕⊕⊝⊝/⊕⊝⊝⊝ + 逐域「为什么」+ **规则守卫**（RCT 不可升级、无理由降级告警、样本 <300 提示考虑不精确性）。
+- `grade_sof_table` —— 跨 outcome 汇成 Summary of Findings 表（结局 · 参与者(研究数) · 效应量 · 确定性 · 关键降级理由）。`grade_explain` 给域定义速查。
+
+分工与 bio-audit 一贯：**工具定死算术、模型给判断**——模型无法含糊说"中等确定性"，必须逐域声明为什么，工具把算错/规则违背暴露出来。配 `grade-sof` skill。确定性驱动措辞：High→"能降低"，Low→"可能降低"，Very Low→"证据极不确定"。
+
+**起始档拆清（易错点）**：meta-analysis / systematic-review **不默认 High**——起始档取决于纳入研究设计（`underlying_design=rct`→High，`observational`→Low），未声明保守按 Low + 警告。`clinical-trial` 是模糊词，必须拆成 `rct`（High）vs `single-arm-trial` / `non-randomized-trial`（Low，按观察性、可升级）。
+
+**EtD 层（`etd_recommendation`）**：确定性 ≠ 推荐。要不要推荐、多强（strong / conditional），还要看获益/危害平衡、价值观与偏好、资源/成本、公平性/可接受性/可行性。工具把这些判断确定性地映射成推荐方向（for/against）+ 强度，守卫"低确定性上的强推荐"（属 GRADE 不一致推荐，需符合 5 类特殊情形否则降 conditional），措辞遵循 GRADE 惯例：strong→"we recommend"，conditional→"we suggest"。
+
+## 单细胞基础模型适配层（bio-singlecell + bio-scfm）
+
+把 Geneformer / scGPT 当**计算工具**（表达谱→embedding 的编码器）用，不是当聊天模型。核心铁律：**任何 embedding 必须可复现**，输入输出全程记 provenance。哲学同 generators——工具产出「可复现脚本 + provenance 记录」，重活（GPU 上跑模型）在用户机器上，中间对象落用户磁盘。
+
+- **bio-singlecell**（喂数据前的标准化 + 追溯层）：`anndata_fingerprint`（元数据指纹 + 生成算真·内容哈希的本地代码片段；同一份数据在任何机器上指纹一致）、`sc_preprocess_recipe`（模型对口的确定性 scanpy 配方 + `recipe_hash` + 脚本——Geneformer 走 rank-value 跳过 log/HVG，scGPT 走 HVG+value binning）、`sc_qc_thresholds`（MAD-based 可解释阈值，返回"剔除谁、凭什么"）。
+- **bio-scfm**（编码器适配）：`scfm_registry` / `scfm_model_matrix`（模型矩阵）、`scfm_embed_plan`（产出 embedding **skeleton**：`runnable=false`、脚本带 NOT-RUNNABLE 横幅 + `raise SystemExit` 护栏 + TODO/伪代码——**不是可直接运行的脚本**）、`scfm_provenance_record`（构造带 `provenance_hash` 的规范记录）、`scfm_provenance_verify`（重算哈希 + 查必填 → trustworthy / not_reproducible）。
+
+**模型矩阵**：4 个预训练 **foundation model**（Geneformer / scGPT / CellFM / UCE）+ 3 个 **domain-specific baseline**（scVI / totalVI / MultiVI，每份数据自训 VAE，非预训练）。保留 baseline 是为**诚实对照**——跑 foundation model 时至少配一个 baseline，否则无法判断 foundation 的 embedding 是不是真比自训 VAE 强。各模型标 `category` / 输入 ID 类型 / 模态（totalVI=RNA+ADT，MultiVI=RNA+ATAC）。
+
+provenance 五件套缺一不可：**输入 AnnData 内容哈希 · 预处理参数哈希 · 模型版本/checkpoint · embedding 维度/输出哈希/pooling · seed/环境**。`_lib/provenance.py` 提供规范化 JSON + sha256，任何记录第三方都能重算验真、篡改必被检出。配 `single-cell-prep` / `scfm-embed` 两个 skill。**绝不在对话里"假装"跑了模型下结论**，也**绝不把 skeleton 当 runnable 脚本**——那是把计算工具误当聊天模型。

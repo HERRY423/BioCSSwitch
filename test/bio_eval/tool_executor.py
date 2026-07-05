@@ -38,8 +38,11 @@ _SERVER_MODULE_PATHS = [
     "bio-drug/opentargets_server.py",
     "bio-gene/ncbi_server.py",
     "bio-audit/evidence_verify_server.py",
+    "bio-audit/grade_server.py",
     "bio-privacy/phi_server.py",
     "bio-compiler/question_compiler_server.py",
+    "bio-singlecell/singlecell_server.py",
+    "bio-scfm/scfm_server.py",
 ]
 
 

@@ -1,8 +1,8 @@
 {
   "id": "bio-audit",
   "name": "证据链与引用审计",
-  "description": "为每条医学结论强制绑定 PMID / DOI / NCT，逐条到 PubMed / Crossref / ClinicalTrials.gov 校验真实性，并按证据类型（meta-analysis / RCT / observational / animal / in vitro）分层。含一个 Skill 规范强制引用格式与证据表输出。",
-  "version": "0.1.0",
+  "description": "为每条医学结论强制绑定 PMID / DOI / NCT，逐条到 PubMed / Crossref / ClinicalTrials.gov 校验真实性，并按证据类型分层。含 claim 级证据图（物种/样本量/适用边界/反证）、GRADE/SoF 证据确定性引擎，以及不确定性台账。含 Skill 规范强制引用格式与证据表输出。",
+  "version": "0.2.0",
   "requires_env": [],
   "depends_on": ["bio-lit"],
   "servers": [
@@ -10,12 +10,21 @@
       "name": "bio-audit-verify",
       "script": "packs/bio-audit/evidence_verify_server.py",
       "env_pass": ["NCBI_API_KEY", "NCBI_EMAIL", "CROSSREF_MAILTO"]
+    },
+    {
+      "name": "bio-audit-grade",
+      "script": "packs/bio-audit/grade_server.py",
+      "env_pass": []
     }
   ],
   "skills": [
     {
       "id": "evidence-audit",
       "src": "packs/bio-audit/skills/evidence-audit"
+    },
+    {
+      "id": "grade-sof",
+      "src": "packs/bio-audit/skills/grade-sof"
     }
   ]
 }

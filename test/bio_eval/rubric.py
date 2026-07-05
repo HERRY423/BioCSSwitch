@@ -67,6 +67,61 @@ def dim_query_relevance(tool_calls: List[Dict[str, Any]], primary_tool: Optional
     return best if found_call else 0.0
 
 
+def dim_gold_match(final_text: str, gold: Dict[str, Any]) -> Optional[float]:
+    """专家金标准匹配：答复是否命中专家标定的正确 ID / 必提实体。
+    gold = {ids:[...], must_mention:[...], mode:"any"|"all"}。都空 → None。"""
+    text = final_text or ""
+    parts: List[float] = []
+    ids = gold.get("ids") or []
+    if ids:
+        found = _all_ids_flat(extract_ids(text))
+        hit = sum(1 for g in ids if g in found or g.upper() in {x.upper() for x in found})
+        parts.append(hit / len(ids))
+    mentions = gold.get("must_mention") or []
+    if mentions:
+        tl = text.lower()
+        if gold.get("mode") == "all":
+            parts.append(sum(1 for m in mentions if m.lower() in tl) / len(mentions))
+        else:  # any-of: 命中任意一个即满分（如"KRAS G12C 药物"命中 sotorasib 或 adagrasib）
+            parts.append(1.0 if any(m.lower() in tl for m in mentions) else 0.0)
+    if not parts:
+        return None
+    return sum(parts) / len(parts)
+
+
+# 语义 grounding：抽答复里的"事实原子"（数字事实 + 命名实体），看有多少真出现在工具结果里。
+# 目的：抓"编造数字/实体"——ID 对但把 HR 0.65 编成 0.42 这类，ID-grounding 抓不到。
+_NUM_FACT = re.compile(r"\b\d+(?:\.\d+)?\s*%|\b\d+(?:\.\d+)?\b")
+_ENTITY_TOK = re.compile(r"\b[A-Z][A-Za-z0-9\-]{2,}\b")
+_ENTITY_STOP = {"The", "This", "PMID", "DOI", "NCT", "GSE", "CHEMBL", "RCT", "PFS", "OS",
+                "ORR", "HR", "OR", "RR", "CI", "FDA", "USA", "II", "III", "IV", "JSON"}
+
+
+def dim_semantic_grounding(final_text: str, tool_results: List[Dict[str, Any]]) -> Optional[float]:
+    """答复里的数字事实 + 命名实体，有多少能在工具结果里找到出处。无可查事实 → None。"""
+    text = final_text or ""
+    results_blob = "\n".join(str(r.get("content", "")) for r in tool_results or [])
+    if not results_blob:
+        return None
+    atoms: set = set()
+    for m in _NUM_FACT.finditer(text):
+        tok = m.group(0).replace(" ", "")
+        # 跳过年份和小整数（噪声大）
+        if re.fullmatch(r"(19|20)\d{2}", tok) or re.fullmatch(r"\d", tok):
+            continue
+        atoms.add(tok)
+    for m in _ENTITY_TOK.finditer(text):
+        tok = m.group(0)
+        if tok in _ENTITY_STOP:
+            continue
+        atoms.add(tok)
+    if not atoms:
+        return None
+    blob_low = results_blob.lower()
+    grounded = sum(1 for a in atoms if a.replace(" ", "").lower() in blob_low)
+    return grounded / len(atoms)
+
+
 def dim_grounded(final_text: str, tool_results: List[Dict[str, Any]]) -> Optional[float]:
     """最终答复里的 ID 有多少比例真的出现在工具返回里（而非模型自己编的）。
     答复里没有任何 ID → None（本维度不适用，交给别的维度评）。"""
@@ -143,7 +198,9 @@ def _check_shape(obj: Any, shape: Dict[str, Any]) -> float:
 _DEFAULT_WEIGHTS = {
     "tool_invoked": 1.0,
     "query_relevance": 1.0,
-    "grounded": 1.5,       # 用对结果比调用本身更重要
+    "grounded": 1.5,            # 用对结果比调用本身更重要
+    "gold_match": 2.0,          # 命中专家金标准是最强信号
+    "semantic_grounding": 1.5,  # 数字/实体不能编
     "uncertainty": 1.0,
     "json_valid": 1.5,
     "custom": 1.5,
@@ -172,6 +229,20 @@ def score_case(case: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
             notes.append("要求 grounding 但答复未给出任何可核对 ID")
         else:
             dims["grounded"] = g
+
+    if r.get("gold"):
+        gm = dim_gold_match(ctx["final_text"], r["gold"])
+        if gm is not None:
+            dims["gold_match"] = gm
+            if gm < 1.0:
+                notes.append(f"专家金标准未完全命中（{gm:.2f}）")
+
+    if r.get("require_semantic"):
+        sg = dim_semantic_grounding(ctx["final_text"], ctx.get("tool_results") or [])
+        if sg is None:
+            notes.append("无可核查的事实原子，语义 grounding 跳过")
+        else:
+            dims["semantic_grounding"] = sg
 
     if r.get("require_uncertainty"):
         dims["uncertainty"] = dim_uncertainty(ctx["final_text"])
