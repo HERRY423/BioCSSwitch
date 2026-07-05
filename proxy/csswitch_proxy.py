@@ -6,6 +6,8 @@ Providers:
                    代理只做「透传 + 改模型名 + 换鉴权头 + max_tokens 夹取 + 连接重试」，
                    thinking/tool_use 全部原生保真（不翻译协议）。
   qwen           ：DashScope compatible-mode —— Anthropic↔OpenAI 双向翻译（流式以 SSE 回放保真 tool_use）。
+  openai-custom  ：任意 OpenAI Chat Completions 兼容端点，base_url + token + model。
+                   代理拼 /chat/completions 与 /models，并复用 qwen 的 Anthropic↔OpenAI 翻译链。
   relay          ：任意「中转站」（Anthropic 兼容端点，base_url + token）。原生透传、【不重映射模型】，
                    /v1/models 回源直拉让 Science 选择器自动铺满中转站真实模型。base_url 经
                    CSSWITCH_RELAY_BASE_URL 提供、token 经 CSSWITCH_RELAY_KEY 提供。
@@ -96,6 +98,19 @@ PROVIDERS = {
         "default_cap": 8192,
         "default_model": "qwen-plus",
     },
+    "openai-custom": {
+        "mode": "openai",
+        "url": None,
+        "models_url": None,
+        "key_env": "CSSWITCH_OPENAI_KEY",
+        "auth_style": "bearer",
+        "force_model_override": True,
+        "models": [],
+        "model_map": {},
+        "model_caps": {},
+        "default_cap": None,
+        "default_model": "",
+    },
     "relay": {
         # 「中转站」：任意 Anthropic 兼容端点（base_url + token）。原生透传、【不重映射模型】
         # ——中转站原生认 claude-* 名。上游 url / models_url 在 __main__ 里按 CSSWITCH_RELAY_BASE_URL
@@ -105,6 +120,7 @@ PROVIDERS = {
         "models_url": None,        # __main__ 装配；存在即 /v1/models 回源直拉
         "key_env": "CSSWITCH_RELAY_KEY",
         "passthrough": True,       # resolve_model 原样透传模型名（不映射）
+        "force_model_override": True,
         "auth_style": "both",      # 同时带 x-api-key + Authorization: Bearer（最大兼容各家中转站）
         "models": [],              # 回源拉取，静态为空
         "model_map": {},
@@ -125,8 +141,9 @@ _DATE_SUFFIX = re.compile(r"-\d{8}$")
 # Science 发来的裸 id（如标题 agent 的 claude-haiku-4-5）贴合到中转站真实 id
 # （如 claude-haiku-4-5-20251001）。首拉前为空 → 纯透传。
 RELAY_MODELS = []
-# relay 强制模型 override：面板选了模型时，代理无条件把所有请求模型改成它（覆盖透传）。
-# 由 CSSWITCH_RELAY_MODEL 环境变量在 __main__ 里装配；留空 → None → 维持 PR #4 透传。
+# 强制模型 override：面板选了模型时，代理无条件把所有请求模型改成它（relay 覆盖透传；
+# openai-custom 覆盖 Science 发来的 claude-* 壳）。由 CSSWITCH_RELAY_MODEL 或
+# CSSWITCH_OPENAI_MODEL 环境变量在 __main__ 里装配；留空 → None。
 RELAY_FORCE_MODEL = None
 # relay thinking 策略（来自模板 thinking_policy）：由 CSSWITCH_RELAY_THINKING 在 __main__ 装配。
 # None/"adaptive" → auto→adaptive（现状，如 MiniMax）；"enabled" → 强制 enabled（如 Kimi）。
@@ -194,8 +211,8 @@ def _snap_relay_model(name):
 def resolve_model(name):
     """把 Science 传来的模型名解析成当前 provider 的目标模型。
     优先：relay 强制模型 override > 选择器选中名 > 显式映射 > 去日期后缀 > 前缀匹配 > 默认。"""
-    if PROV.get("passthrough") and RELAY_FORCE_MODEL:
-        return RELAY_FORCE_MODEL   # relay 选了模型：强制覆盖一切（含裸 claude-* 与空名）
+    if PROV.get("force_model_override") and RELAY_FORCE_MODEL:
+        return RELAY_FORCE_MODEL   # relay/openai-custom 选了模型：强制覆盖一切（含裸 claude-* 与空名）
     if not name:
         return PROV["default_model"]
     if PROV.get("passthrough"):   # relay 留空：中转站原生认 claude-*，透传（仅贴合到真实 id）
@@ -325,6 +342,27 @@ def http_get_json(url, headers, attempts=3, timeout=30):
             raise
 
 
+def normalize_openai_base(base):
+    """OpenAI 兼容端点存 base root。用户若误填到 /chat/completions 或 /models，
+    这里收敛回 root，避免后续双拼。"""
+    b = (base or "").strip().rstrip("/")
+    for suffix in ("/v1/chat/completions", "/chat/completions", "/v1/models", "/models"):
+        if b.endswith(suffix):
+            b = b[: -len(suffix)].rstrip("/")
+    return b
+
+
+def _ends_with_version_segment(base):
+    return bool(re.search(r"/v\d+(?:\.\d+)?$", base))
+
+
+def openai_endpoint(base, suffix):
+    root = normalize_openai_base(base)
+    if not _ends_with_version_segment(root):
+        root = root + "/v1"
+    return root + suffix
+
+
 def _upstream_auth_headers():
     """上游鉴权头：按当前 provider 的 auth_style 装 x-api-key / bearer / both。
     deepseek 未设 → 默认 x-api-key（保持原状）；relay = both。"""
@@ -338,14 +376,15 @@ def _upstream_auth_headers():
 
 
 def fetch_relay_models():
-    """回源拉中转站 /v1/models，归一化成 Science 认的 Anthropic 模型列表，并刷新
-    RELAY_MODELS 缓存（供 resolve_model 贴合）。返回归一化后的 list（可空）。"""
+    """回源拉上游模型列表，归一化成 Science 可消费的模型列表。relay 会刷新
+    RELAY_MODELS 缓存（供 resolve_model 贴合）；openai-custom 仅用于模型发现。返回 list（可空）。"""
     global RELAY_MODELS
     murl = PROV.get("models_url")
     if not murl:
         return []
     headers = dict(_upstream_auth_headers())
-    headers["anthropic-version"] = "2023-06-01"
+    if PROV_NAME == "relay":
+        headers["anthropic-version"] = "2023-06-01"
     raw = http_get_json(murl, headers)
     data = raw.get("data") if isinstance(raw, dict) else raw
     out, ids = [], []
@@ -361,17 +400,17 @@ def fetch_relay_models():
                     "display_name": (m.get("display_name") if isinstance(m, dict) else None) or mid,
                     "supports_tools": supports_tools,
                     "created_at": "2026-01-01T00:00:00Z"})
-    if ids:
+    if ids and PROV_NAME == "relay":
         RELAY_MODELS = ids
     return out
 
 
 def build_models_response():
     """装配 /v1/models 响应，返回 (状态码, body dict)。协议锁定（修评审 P2-2）：
-      - relay 回源成功 → (200, {data:[…含 supports_tools…]})。
-      - relay 回源 HTTPError → (上游同状态码, {error_kind:"upstream", upstream_status, message})，
+      - relay/openai-custom 回源成功 → (200, {data:[…含 supports_tools…]})。
+      - 回源 HTTPError → (上游同状态码, {error_kind:"upstream", upstream_status, message})，
         绝不吞成 200+静态（否则掩盖坏 key）。builtin 兜底交 Rust 命令决定。
-      - relay 网络异常 → (502, {error_kind:"network", upstream_status:None, message})。
+      - 网络异常 → (502, {error_kind:"network", upstream_status:None, message})。
       - 非 relay（无 models_url，deepseek/qwen）→ (200, {静态选择器列表})，行为不变。"""
     if PROV.get("models_url"):
         if RELAY_FORCE_MODEL:
@@ -880,6 +919,8 @@ if __name__ == "__main__":
     ap.add_argument("--auth-token", default=None)
     ap.add_argument("--relay-base", default=None,
                     help="relay provider 的中转站 base_url（也可用环境变量 CSSWITCH_RELAY_BASE_URL）")
+    ap.add_argument("--openai-base", default=None,
+                    help="openai-custom provider 的 OpenAI base root（也可用环境变量 CSSWITCH_OPENAI_BASE_URL）")
     args = ap.parse_args()
     PROV_NAME = args.provider
     PROV = PROVIDERS[PROV_NAME]
@@ -900,6 +941,21 @@ if __name__ == "__main__":
         if forced:
             RELAY_FORCE_MODEL = forced
         RELAY_THINKING = (os.environ.get("CSSWITCH_RELAY_THINKING") or "").strip() or None
+    elif PROV_NAME == "openai-custom":
+        base = normalize_openai_base(os.environ.get("CSSWITCH_OPENAI_BASE_URL") or args.openai_base or "")
+        if not base or not re.match(r"^https?://", base):
+            print("openai-custom 需要 OpenAI base root（http(s)://…）。用 --openai-base 或环境变量 "
+                  "CSSWITCH_OPENAI_BASE_URL 提供。", file=sys.stderr)
+            sys.exit(1)
+        forced = (os.environ.get("CSSWITCH_OPENAI_MODEL") or "").strip()
+        PROV = dict(PROV)
+        PROV["url"] = openai_endpoint(base, "/chat/completions")
+        PROV["models_url"] = openai_endpoint(base, "/models")
+        # 模型发现 scratch 只需要 /models，不能要求 CSSWITCH_OPENAI_MODEL；
+        # 正式推理由 Rust 侧 relay_missing_model + Message 探针保证 model 必填。
+        if forced:
+            PROV["default_model"] = forced
+            RELAY_FORCE_MODEL = forced
     _up = os.environ.get("CSSWITCH_UPSTREAM_URL")
     if _up:
         PROV = dict(PROV)

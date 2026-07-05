@@ -6,7 +6,7 @@
 //! Python/Node/shell 里被当作子进程调用，以保住铁律护栏与已验证行为。
 //!
 //! 运行行为由生效 profile 的 `template_id` 经 [`templates`] 注册表派生出 adapter
-//! （deepseek | qwen | relay），再传给 python 代理 `--provider`。
+//! （deepseek | qwen | relay | openai-custom），再传给 python 代理 `--provider`。
 //!
 //! 铁律相关：key 只在内存与 0600 的 config.json；回显前端只给掩码；沙箱端口/目录护栏
 //! 由被调脚本负责（对 8765 与真实目录失败关闭）；退 app 默认停代理、保留沙箱。
@@ -35,7 +35,7 @@ struct AppState {
     proxy: Option<Child>,
     proxy_port: u16,
     secret: String,
-    /// 当前代理进程所用 adapter 名（deepseek | qwen | relay）；用于健康复用判定。
+    /// 当前代理进程所用 adapter 名（deepseek | qwen | relay | openai-custom）；用于健康复用判定。
     provider: String,
     /// 当前代理进程所用 key 的非加密指纹（仅内存、绝不落盘/打印）。
     /// 换 key/换上游后指纹变化 → 触发重启，避免复用带旧配置的代理。
@@ -59,6 +59,7 @@ fn key_env_for_adapter(adapter: &str) -> &'static str {
     match adapter {
         "deepseek" => "DEEPSEEK_API_KEY",
         "qwen" => "DASHSCOPE_API_KEY",
+        "openai-custom" => "CSSWITCH_OPENAI_KEY",
         _ => "CSSWITCH_RELAY_KEY", // relay / 兜底
     }
 }
@@ -86,6 +87,19 @@ fn proxy_args_for(p: &config::Profile) -> ProxyLaunch {
     }
 }
 
+fn proxy_fingerprint(p: &config::Profile, launch: &ProxyLaunch) -> u64 {
+    key_fingerprint(&format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        p.template_id,
+        p.api_format,
+        launch.adapter,
+        launch.base_url,
+        launch.model,
+        launch.thinking_policy,
+        launch.key
+    ))
+}
+
 /// 本轨仅支持 anthropic / openai_chat；其余进 schema 但激活拒绝（待轨道 2：Rust 代理）。
 fn assert_format_supported(p: &config::Profile) -> Result<(), String> {
     match p.api_format.as_str() {
@@ -99,6 +113,10 @@ fn assert_format_supported(p: &config::Profile) -> Result<(), String> {
 /// deepseek/qwen 走各自固定官方端点（python 侧硬编码）；其余 = relay 家族，需带 base_url。
 fn is_native_adapter(adapter: &str) -> bool {
     adapter == "deepseek" || adapter == "qwen"
+}
+
+fn is_openai_custom_adapter(adapter: &str) -> bool {
+    adapter == "openai-custom"
 }
 
 /// 上游主机名（供 status 上游灯做 TCP 可达性探测）。relay 家族从其 base_url 解析。
@@ -371,11 +389,8 @@ fn start_proxy_for(
             "该配置需要填 base_url（如 https://your-relay/claude），请先在面板填写并保存。".into(),
         );
     }
-    // 指纹并入 adapter+base_url+model+key：换其中任一都触发代理重启（避免复用旧上游）。
-    let key_fp = key_fingerprint(&format!(
-        "{}\n{}\n{}\n{}",
-        launch.adapter, launch.base_url, launch.model, launch.key
-    ));
+    // 换任一协议语义或上游字段都触发代理重启，避免不同配置切换时复用旧进程。
+    let key_fp = proxy_fingerprint(profile, &launch);
     let dir = config::default_dir();
     let cfg = config::load_from(&dir).map_err(|e| e.to_string())?;
     let port = cfg.proxy_port;
@@ -435,14 +450,21 @@ fn start_proxy_for(
             .arg(&secret)
             // key 经环境变量注入，绝不作为命令行参数（避免 ps 泄露）。
             .env(launch.key_env, &launch.key);
-        // relay 家族：base_url + 选中模型经环境变量交给代理（均非密钥，但与 key 一致走 env）。
+        // 非 native 家族：base_url + 选中模型经环境变量交给代理（均非密钥，但与 key 一致走 env）。
         if !native {
-            cmd.env("CSSWITCH_RELAY_BASE_URL", &launch.base_url);
-            if !launch.model.is_empty() {
-                cmd.env("CSSWITCH_RELAY_MODEL", &launch.model);
-            }
-            if !launch.thinking_policy.is_empty() {
-                cmd.env("CSSWITCH_RELAY_THINKING", launch.thinking_policy);
+            if is_openai_custom_adapter(&launch.adapter) {
+                cmd.env("CSSWITCH_OPENAI_BASE_URL", &launch.base_url);
+                if !launch.model.is_empty() {
+                    cmd.env("CSSWITCH_OPENAI_MODEL", &launch.model);
+                }
+            } else {
+                cmd.env("CSSWITCH_RELAY_BASE_URL", &launch.base_url);
+                if !launch.model.is_empty() {
+                    cmd.env("CSSWITCH_RELAY_MODEL", &launch.model);
+                }
+                if !launch.thinking_policy.is_empty() {
+                    cmd.env("CSSWITCH_RELAY_THINKING", launch.thinking_policy);
+                }
             }
         }
         cmd.stdout(Stdio::from(logf))
@@ -1450,13 +1472,14 @@ fn fetch_models(app: tauri::AppHandle, req: FetchModelsReq) -> Result<serde_json
     let root = asset_root(&app).ok_or("找不到代理脚本 proxy/csswitch_proxy.py。")?;
     let py = proc::find_exe("python3").ok_or("缺少依赖 python3（起临时代理需要）。")?;
     let script = root.join("proxy/csswitch_proxy.py");
+    let adapter = templates::adapter_for(tid);
 
     let res = scratch::scratch_probe(
         &py,
         &script,
         &scratch::ScratchTarget {
-            provider: "relay",
-            key_env: "CSSWITCH_RELAY_KEY",
+            provider: adapter,
+            key_env: key_env_for_adapter(adapter),
             base_url: &base_url,
             key: &key,
             model: None,
@@ -1949,8 +1972,8 @@ mod tests {
         create_profile_inner, decide_switch, delete_profile_inner, first_http_url,
         health_timeout_reason, is_main_list_model, key_env_for_adapter, key_fingerprint,
         merge_and_sort_models, nonactive_probe_verdict, parse_host, probe_kind_for,
-        probe_kind_for_model, proxy_args_for, redact, relay_missing_base_url, relay_missing_model,
-        rollback_status_clause, sandbox_home, settings_change_needs_teardown,
+        probe_kind_for_model, proxy_args_for, proxy_fingerprint, redact, relay_missing_base_url,
+        relay_missing_model, rollback_status_clause, sandbox_home, settings_change_needs_teardown,
         should_scratch_candidate, should_write_back, skip_scratch_verify,
         update_profile_connection_inner, update_profile_metadata_inner, upstream_host,
         ConnectionEdit, SwitchOutcome,
@@ -1998,6 +2021,20 @@ mod tests {
         assert_eq!(b.key_env, "CSSWITCH_RELAY_KEY");
         assert_eq!(b.base_url, "https://open.bigmodel.cn/api/anthropic");
         assert_eq!(b.model, "glm-5");
+
+        let custom_openai = Profile {
+            template_id: "custom-openai".into(),
+            api_format: "openai_chat".into(),
+            base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+            api_key: "ok".into(),
+            model: "glm-4.5".into(),
+            ..Default::default()
+        };
+        let c = proxy_args_for(&custom_openai);
+        assert_eq!(c.adapter, "openai-custom");
+        assert_eq!(c.key_env, "CSSWITCH_OPENAI_KEY");
+        assert_eq!(c.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(c.model, "glm-4.5");
     }
 
     #[test]
@@ -2027,8 +2064,32 @@ mod tests {
     fn key_env_for_adapter_maps_adapters() {
         assert_eq!(key_env_for_adapter("deepseek"), "DEEPSEEK_API_KEY");
         assert_eq!(key_env_for_adapter("qwen"), "DASHSCOPE_API_KEY");
+        assert_eq!(key_env_for_adapter("openai-custom"), "CSSWITCH_OPENAI_KEY");
         assert_eq!(key_env_for_adapter("relay"), "CSSWITCH_RELAY_KEY");
         assert_eq!(key_env_for_adapter("anything-else"), "CSSWITCH_RELAY_KEY");
+    }
+
+    #[test]
+    fn proxy_fingerprint_includes_protocol_semantics() {
+        use crate::config::Profile;
+        let mut p = Profile {
+            template_id: "kimi".into(),
+            api_format: "anthropic".into(),
+            base_url: "https://same.example/anthropic".into(),
+            api_key: "same-key".into(),
+            model: "same-model".into(),
+            ..Default::default()
+        };
+        let kimi_launch = proxy_args_for(&p);
+        let kimi_fp = proxy_fingerprint(&p, &kimi_launch);
+
+        p.template_id = "custom".into();
+        let custom_launch = proxy_args_for(&p);
+        let custom_fp = proxy_fingerprint(&p, &custom_launch);
+        assert_ne!(
+            kimi_fp, custom_fp,
+            "同 adapter/base/model/key 但模板语义不同，必须重启代理"
+        );
     }
 
     // ---------- P1-c: 端口变更是否需拆链路（纯函数，4 组合） ----------
@@ -2309,10 +2370,11 @@ mod tests {
     }
 
     #[test]
-    fn list_templates_has_nine() {
+    fn list_templates_has_ten() {
         let v = build_list_templates();
-        assert_eq!(v.len(), 9);
+        assert_eq!(v.len(), 10);
         assert!(v.iter().any(|t| t["id"] == "custom"));
+        assert!(v.iter().any(|t| t["id"] == "custom-openai"));
         assert!(v.iter().any(|t| t["id"] == "kimi"));
         assert!(v.iter().any(|t| t["id"] == "minimax"));
     }
@@ -2365,6 +2427,10 @@ mod tests {
     fn upstream_host_by_adapter() {
         assert_eq!(upstream_host("deepseek", ""), "api.deepseek.com");
         assert_eq!(upstream_host("qwen", ""), "dashscope.aliyuncs.com");
+        assert_eq!(
+            upstream_host("openai-custom", "https://open.bigmodel.cn/api/paas/v4"),
+            "open.bigmodel.cn"
+        );
         assert_eq!(
             upstream_host("relay", "https://open.bigmodel.cn/api/anthropic"),
             "open.bigmodel.cn"

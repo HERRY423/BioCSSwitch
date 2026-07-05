@@ -243,5 +243,45 @@ class ProxyQwenUpstreamErrorPassthrough(unittest.TestCase):
         self.assertEqual(s, 401, f"qwen 也应保留上游 401，实收 {s} {b[:160]!r}")
 
 
+class ProxyOpenAICustomModelsDiscovery(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.up_url, cls.hits, cls.stop_up = start_mock("openai_models")
+        port = 18995
+        cls.base = f"http://127.0.0.1:{port}"
+        cls.logf = os.path.join(tempfile.gettempdir(), f"csswitch-openai-models-{port}.log")
+        open(cls.logf, "w").close()
+        env = dict(os.environ, CSSWITCH_OPENAI_KEY="fake-openai-key",
+                   CSSWITCH_OPENAI_BASE_URL=cls.up_url)
+        env.pop("CSSWITCH_OPENAI_MODEL", None)
+        cls.proc = subprocess.Popen(
+            [sys.executable, PROXY, "--provider", "openai-custom",
+             "--port", str(port), "--auth-token", SEC, "--log", cls.logf],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            try:
+                s, _b = _req(f"{cls.base}/{SEC}/health")
+                if s == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(timeout=5)
+        cls.stop_up()
+
+    def test_models_fetch_starts_without_model_env(self):
+        # 回归 v0.3.3 F1：获取模型 scratch 不带 CSSWITCH_OPENAI_MODEL。
+        # 代理应能启动并只为 /models 回源；正式推理由 Rust 侧仍要求 model 必填。
+        s, b = _req(f"{self.base}/{SEC}/v1/models")
+        self.assertEqual(s, 200, b[:160])
+        body = json.loads(b)
+        self.assertEqual([m["id"] for m in body["data"]], ["glm-4.5"])
+        self.assertEqual(self.hits, ["/up/v1/models"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -68,9 +68,10 @@ CSSwitch 的名字和产品形态参考了 [CC Switch](https://github.com/farion
 | **小米 MiMo** | 内置 Anthropic 兼容端点 | 下拉精选或自填 |
 | **硅基流动** | 内置 Anthropic 兼容端点 | 下拉精选或自填 |
 | **OpenRouter** | 内置 Anthropic 兼容端点 | 下拉精选或自填 |
-| **自定义端点** | 自填任意 OpenAI / Anthropic 兼容端点 | 自填模型名 |
+| **自定义 Anthropic** | 自填任意 Anthropic 兼容端点 | 自填模型名 |
+| **自定义 OpenAI** | 自填任意 OpenAI Chat Completions 兼容端点，代理自动转换协议 | 自填模型名 |
 
-每个服务商都可以在下拉里选择我们维护的主流模型，也可以直接填写任意模型名；填好后，Science 顶部的模型选择器会显示你选择的**真实模型名**（例如 `glm-5.2`），而不是笼统的 claude。本地 Ollama 等更多来源仍在计划中，见下方「更新计划」。
+每个服务商都可以在下拉里选择我们维护的主流模型，也可以直接填写任意模型名；填好后，Science 顶部的模型选择器会显示你选择的**真实模型名**（例如 `glm-5.2`），而不是笼统的 claude。自定义 OpenAI 可以填写服务商给出的 base URL，常见的 `/v1`、`/v4`、`/chat/completions` 或 `/models` 结尾都会自动归一化。本地 Ollama 等更多来源仍在计划中，见下方「更新计划」。
 
 ## 快速开始
 

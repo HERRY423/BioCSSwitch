@@ -8,8 +8,8 @@ pub struct Template {
     pub name: &'static str,
     pub category: &'static str,   // official | cn_official | custom
     pub api_format: &'static str, // anthropic | openai_chat | openai_responses | gemini_native
-    pub adapter: &'static str,    // 运行行为 → python 代理 --provider：deepseek | qwen | relay
-    pub base_url: &'static str,   // 默认；空=用户填
+    pub adapter: &'static str, // 运行行为 → python 代理 --provider：deepseek | qwen | relay | openai-custom
+    pub base_url: &'static str, // 默认；空=用户填
     pub base_url_editable: bool,
     pub requires_model_override: bool,
     pub builtin_models: &'static [&'static str],
@@ -181,8 +181,23 @@ static TEMPLATES: &[Template] = &[
         thinking_policy: "",
     },
     Template {
+        id: "custom-openai",
+        name: "自定义 OpenAI",
+        category: "custom",
+        api_format: "openai_chat",
+        adapter: "openai-custom",
+        base_url: "",
+        base_url_editable: true,
+        requires_model_override: true,
+        builtin_models: &[],
+        website_url: "",
+        icon: "custom",
+        icon_color: "#2563EB",
+        thinking_policy: "",
+    },
+    Template {
         id: "custom",
-        name: "自定义",
+        name: "自定义 Anthropic",
         category: "custom",
         api_format: "anthropic",
         adapter: "relay",
@@ -243,7 +258,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn table_has_nine_templates() {
+    fn table_has_ten_templates() {
         let ids: Vec<&str> = all().iter().map(|t| t.id).collect();
         assert_eq!(
             ids,
@@ -256,6 +271,7 @@ mod tests {
                 "minimax",
                 "openrouter",
                 "qwen",
+                "custom-openai",
                 "custom"
             ]
         );
@@ -269,6 +285,7 @@ mod tests {
         assert_eq!(adapter_for("kimi"), "relay");
         assert_eq!(adapter_for("minimax"), "relay");
         assert_eq!(adapter_for("openrouter"), "relay");
+        assert_eq!(adapter_for("custom-openai"), "openai-custom");
         assert_eq!(adapter_for("custom"), "relay");
         assert_eq!(adapter_for("unknown-xyz"), "relay"); // 兜底
     }
@@ -280,6 +297,8 @@ mod tests {
         assert_eq!(by_id("kimi").unwrap().api_format, "anthropic");
         assert_eq!(by_id("minimax").unwrap().api_format, "anthropic");
         assert_eq!(by_id("qwen").unwrap().api_format, "openai_chat");
+        assert_eq!(by_id("custom-openai").unwrap().api_format, "openai_chat");
+        assert_eq!(by_id("custom").unwrap().api_format, "anthropic");
     }
 
     #[test]
@@ -289,6 +308,7 @@ mod tests {
         assert!(by_id("kimi").unwrap().requires_model_override);
         assert!(by_id("minimax").unwrap().requires_model_override);
         assert!(by_id("glm").unwrap().requires_model_override); // 改：全 relay 统一 force
+        assert!(by_id("custom-openai").unwrap().requires_model_override);
         assert!(by_id("openrouter").unwrap().requires_model_override); // 改
         assert!(by_id("custom").unwrap().requires_model_override);
         // 旗舰默认 = builtin_models 首项（官方核定，2026-07-04）

@@ -71,6 +71,7 @@ class RelayProvider(unittest.TestCase):
 
     def setUp(self):
         cs.PROV = dict(cs.PROVIDERS["relay"])
+        cs.PROV_NAME = "relay"
         cs.PROV["url"] = "https://relay.test/claude/v1/messages"
         cs.PROV["models_url"] = "https://relay.test/claude/v1/models"
         cs.KEY = "cr_testkey"
@@ -203,6 +204,81 @@ class RelayProvider(unittest.TestCase):
         self.assertEqual(code, 200)
         ids = [m["id"] for m in body["data"]]
         self.assertIn("claude-opus-4-8", ids)
+
+
+class OpenAICustomProvider(unittest.TestCase):
+    def setUp(self):
+        cs.PROV = dict(cs.PROVIDERS["openai-custom"])
+        cs.PROV_NAME = "openai-custom"
+        cs.PROV["url"] = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        cs.PROV["models_url"] = "https://open.bigmodel.cn/api/paas/v4/models"
+        cs.PROV["default_model"] = "glm-4.5"
+        cs.KEY = "sk-openai"
+        cs.RELAY_FORCE_MODEL = "glm-4.5"
+
+    def tearDown(self):
+        cs.RELAY_FORCE_MODEL = None
+
+    def test_openai_base_root_normalization(self):
+        root = "https://open.bigmodel.cn/api/paas/v4"
+        self.assertEqual(cs.normalize_openai_base(root + "/chat/completions"), root)
+        self.assertEqual(cs.normalize_openai_base(root + "/models"), root)
+        self.assertEqual(cs.openai_endpoint(root + "/chat/completions", "/models"), root + "/models")
+        self.assertEqual(
+            cs.openai_endpoint(root + "/models", "/chat/completions"),
+            root + "/chat/completions",
+        )
+        self.assertEqual(
+            cs.openai_endpoint("https://api.siliconflow.cn", "/chat/completions"),
+            "https://api.siliconflow.cn/v1/chat/completions",
+        )
+        self.assertEqual(
+            cs.openai_endpoint("https://api.siliconflow.cn/v1/models", "/chat/completions"),
+            "https://api.siliconflow.cn/v1/chat/completions",
+        )
+
+    def test_force_model_enters_openai_translation(self):
+        req = {
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1000000,
+        }
+        out = cs.anthropic_to_openai(req)
+        self.assertEqual(out["model"], "glm-4.5")
+        self.assertEqual(out["max_tokens"], 1000000, "custom OpenAI 不做通用 token 夹取")
+
+    def test_auth_headers_bearer_only(self):
+        self.assertEqual(cs._upstream_auth_headers(), {"Authorization": "Bearer sk-openai"})
+
+    def test_models_uses_bearer_without_anthropic_version(self):
+        seen = {}
+        orig = cs.http_get_json
+
+        def fake(url, headers):
+            seen["url"] = url
+            seen["headers"] = headers
+            return {"data": [{"id": "glm-4.5"}]}
+
+        cs.http_get_json = fake
+        try:
+            out = cs.fetch_relay_models()
+        finally:
+            cs.http_get_json = orig
+        self.assertEqual(seen["url"], "https://open.bigmodel.cn/api/paas/v4/models")
+        self.assertEqual(seen["headers"].get("Authorization"), "Bearer sk-openai")
+        self.assertNotIn("anthropic-version", seen["headers"])
+        self.assertEqual([m["id"] for m in out], ["glm-4.5"])
+
+    def test_models_discovery_works_without_forced_model(self):
+        cs.RELAY_FORCE_MODEL = None
+        orig = cs.http_get_json
+        cs.http_get_json = lambda url, headers: {"data": [{"id": "glm-4.5"}]}
+        try:
+            code, body = cs.build_models_response()
+        finally:
+            cs.http_get_json = orig
+        self.assertEqual(code, 200)
+        self.assertEqual([m["id"] for m in body["data"]], ["glm-4.5"])
 
 
 class ThinkingNormalization(unittest.TestCase):

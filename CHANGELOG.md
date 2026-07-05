@@ -4,6 +4,24 @@
 
 > **约定**：已修问题从 [`docs/known-issues.md`](docs/known-issues.md)「毕业」到这里（发布即定稿）；未修/进行中留在 known-issues；硬 bug 的根因证据链存在 [`findings/`](findings/)。
 
+## [0.3.3] — 2026-07-05
+
+> 主题：**自定义 OpenAI 兼容 API 真正可用**。把原先只服务通义千问的 OpenAI Chat Completions 翻译路径泛化，补上独立的「自定义 OpenAI」来源，让任意 OpenAI 兼容 base root + key + model 可经 CSSwitch 转成 Claude Science 可用的 Anthropic `/v1/messages`。
+
+### 新增 Added
+- **自定义 OpenAI 兼容端点**：新增独立模板「自定义 OpenAI」，与「自定义 Anthropic」分开保存。用户填写 OpenAI 兼容 base root、模型与 key 后，代理负责把 Anthropic 请求翻译为 OpenAI Chat Completions，再把响应翻回 Anthropic。
+- **OpenAI base root 容错**：支持 `https://.../v1`、`https://.../api/paas/v4` 这类版本段地址；用户误填到 `/chat/completions` 或 `/models` 结尾时会收敛回 root，避免双拼路径。裸 host/root 会按 OpenAI 惯例补 `/v1`。
+
+### 修复 Fixed
+- **自定义 OpenAI 配置保存了但实际仍走 relay/qwen 硬编码路径**：新增 `openai-custom` adapter 身份，补齐 key env、base_url/model env、scratch 校验、模型发现和正式启动链路，运行时不再只靠 `api_format` 字段猜协议。
+- **自定义 OpenAI「获取模型」失败**：模型发现 scratch 不再要求 `CSSWITCH_OPENAI_MODEL`；代理可以只凭 base URL + key 启动 `/v1/models` 回源，正式推理仍由 Rust 侧校验 model 必填。
+- **不同配置切换可能复用旧代理语义**：代理复用指纹纳入 `template_id`、`api_format` 与 thinking 策略；即使 adapter/base/model/key 看起来相同，只要模板协议语义不同也会重启代理，避免旧进程带着旧环境继续服务。
+- **运维自检测试仍按旧固定槽 key 语义判断**：更新 doctor 回归到多 profile 的 `CSSWITCH_KEY_PRESENT` 语义，避免测试把 shell 里的 provider key 当作真实配置来源。
+
+### 说明 Notes
+- OpenAI custom 的 thinking 本版明确降级为不映射：不会发明通用 reasoning 参数，普通请求、tool_choice、stop/top_p 与流式回放路径保持在既有翻译链内。
+- 离线验证：cargo test 124 / clippy 0 / fmt clean；`test/run_all.sh` ALL GREEN；代理单测 45；新增真实代理回归覆盖「无 `CSSWITCH_OPENAI_MODEL` 仍可获取模型」。涉及 loopback 的测试在沙箱外重跑通过，未触碰真实 `~/.claude-science` 与 8765 端口。
+
 ## [0.3.2] — 2026-07-04
 
 > 主题：**Science 顶部显示真实模型名 + 新增 Kimi / MiniMax**。修复 relay 家在 Science 模型选择器里笼统显示「claude / opus」的问题（#11），让每个服务商都能选择或自填模型、并在 Science 里显示真实模型名；新增 Kimi（Moonshot）与 MiniMax；各家内置模型更新到官方主流版本。

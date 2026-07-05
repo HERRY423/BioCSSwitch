@@ -22,11 +22,11 @@ if [ $rc -eq 0 ]; then ok "doctor exits 0 when deps present"; else no "doctor fa
 out="$(CSSWITCH_PROXY_PORT=8765 CSSWITCH_CONFIG="$T/nope.json" "$DOCTOR" 2>&1)"; rc=$?
 if [ $rc -ne 0 ] && echo "$out" | grep -q "8765"; then ok "doctor fails on reserved port 8765"; else no "doctor did not reject 8765 (rc=$rc): $out"; fi
 
-# key 脱敏：设了 key，输出报「已设置」但绝不含 key 明文
+# key 脱敏：app 传 key-present 标志，输出报「已配置」但绝不含 shell 里的 key 明文
 SECRETVAL="DUMMY-KEY-abc123XYZ-should-never-print"
-out="$(DEEPSEEK_API_KEY="$SECRETVAL" CSSWITCH_PROVIDER=deepseek CSSWITCH_CONFIG="$T/nope.json" "$DOCTOR" 2>&1)"; rc=$?
+out="$(DEEPSEEK_API_KEY="$SECRETVAL" CSSWITCH_PROVIDER=deepseek CSSWITCH_ADAPTER=deepseek CSSWITCH_KEY_PRESENT=1 CSSWITCH_CONFIG="$T/nope.json" "$DOCTOR" 2>&1)"; rc=$?
 if echo "$out" | grep -q "$SECRETVAL"; then no "doctor LEAKED key value"; else ok "doctor never prints key value"; fi
-if echo "$out" | grep -q "已设置"; then ok "doctor reports key present"; else no "doctor did not report key present: $out"; fi
+if echo "$out" | grep -q "key 已配置"; then ok "doctor reports key present"; else no "doctor did not report key present: $out"; fi
 
 # config 权限：0644 → 警告应为 600（不改变退出码，仍 0）
 CFG644="$T/cfg644.json"; echo '{}' > "$CFG644"; chmod 644 "$CFG644"

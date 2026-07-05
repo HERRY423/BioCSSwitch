@@ -42,6 +42,19 @@ def start_mock(mode="json"):
                 self.end_headers()
                 self.wfile.write(body)
 
+        def do_GET(self):
+            hits.append(self.path)
+            if mode == "openai_models" and self.path.endswith("/models"):
+                body = json.dumps({"data": [{"id": "glm-4.5"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404)
+            self.end_headers()
+
     srv = ThreadingHTTPServer(("127.0.0.1", 0), M)
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()

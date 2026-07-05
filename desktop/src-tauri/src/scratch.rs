@@ -75,9 +75,10 @@ impl Drop for ScratchGuard {
 }
 
 /// 临时代理的环境注入清单（纯函数，便于测试）：候选 key 注入指定 `key_env`；`base_url` 非空
-/// 才注入 `CSSWITCH_RELAY_BASE_URL`（native=deepseek/qwen 传空 → 不注入，走各自硬编码官方端点）；
-/// `model` 非空注入 `CSSWITCH_RELAY_MODEL`（仅 relay 生效）。修真机 P1：让 native 也能被临时代理探测。
+/// 才注入对应 adapter 的 base env（native=deepseek/qwen 传空 → 不注入，走各自硬编码官方端点）；
+/// `model` 非空注入对应 adapter 的 model env。修真机 P1：让 native 也能被临时代理探测。
 pub fn scratch_env(
+    provider: &str,
     key_env: &str,
     key: &str,
     base_url: &str,
@@ -86,14 +87,24 @@ pub fn scratch_env(
 ) -> Vec<(String, String)> {
     let mut v = vec![(key_env.to_string(), key.to_string())];
     if !base_url.is_empty() {
-        v.push(("CSSWITCH_RELAY_BASE_URL".to_string(), base_url.to_string()));
+        let env = if provider == "openai-custom" {
+            "CSSWITCH_OPENAI_BASE_URL"
+        } else {
+            "CSSWITCH_RELAY_BASE_URL"
+        };
+        v.push((env.to_string(), base_url.to_string()));
     }
     if let Some(m) = model {
         if !m.is_empty() {
-            v.push(("CSSWITCH_RELAY_MODEL".to_string(), m.to_string()));
+            let env = if provider == "openai-custom" {
+                "CSSWITCH_OPENAI_MODEL"
+            } else {
+                "CSSWITCH_RELAY_MODEL"
+            };
+            v.push((env.to_string(), m.to_string()));
         }
     }
-    if !relay_thinking.is_empty() {
+    if provider != "openai-custom" && !relay_thinking.is_empty() {
         v.push((
             "CSSWITCH_RELAY_THINKING".to_string(),
             relay_thinking.to_string(),
@@ -154,6 +165,7 @@ pub fn scratch_probe(
         .stderr(Stdio::null());
     // key/base_url/model 经 env 注入（绝不进 argv，避免 ps 泄露）；native 不带 relay base。
     for (k, v) in scratch_env(
+        target.provider,
         target.key_env,
         target.key,
         target.base_url,
@@ -263,7 +275,7 @@ mod tests {
     #[test]
     fn scratch_env_native_uses_native_key_env_and_no_relay_base() {
         // native：key 进 DEEPSEEK_API_KEY，绝不设 CSSWITCH_RELAY_BASE_URL（否则会被当中转站）。
-        let env = scratch_env("DEEPSEEK_API_KEY", "sk-x", "", None, "");
+        let env = scratch_env("deepseek", "DEEPSEEK_API_KEY", "sk-x", "", None, "");
         assert_eq!(
             env,
             vec![("DEEPSEEK_API_KEY".to_string(), "sk-x".to_string())]
@@ -273,6 +285,7 @@ mod tests {
     #[test]
     fn scratch_env_relay_sets_base_url_and_model() {
         let env = scratch_env(
+            "relay",
             "CSSWITCH_RELAY_KEY",
             "sk-y",
             "https://r/claude",
@@ -293,8 +306,32 @@ mod tests {
     }
 
     #[test]
+    fn scratch_env_openai_custom_sets_openai_base_and_model() {
+        let env = scratch_env(
+            "openai-custom",
+            "CSSWITCH_OPENAI_KEY",
+            "sk-z",
+            "https://open.bigmodel.cn/api/paas/v4",
+            Some("glm-4.5"),
+            "enabled",
+        );
+        assert_eq!(
+            env,
+            vec![
+                ("CSSWITCH_OPENAI_KEY".to_string(), "sk-z".to_string()),
+                (
+                    "CSSWITCH_OPENAI_BASE_URL".to_string(),
+                    "https://open.bigmodel.cn/api/paas/v4".to_string()
+                ),
+                ("CSSWITCH_OPENAI_MODEL".to_string(), "glm-4.5".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn scratch_env_relay_injects_thinking_policy() {
         let env = scratch_env(
+            "relay",
             "CSSWITCH_RELAY_KEY",
             "sk-y",
             "https://r/claude",
@@ -306,7 +343,14 @@ mod tests {
 
     #[test]
     fn scratch_env_empty_thinking_not_injected() {
-        let env = scratch_env("CSSWITCH_RELAY_KEY", "sk-y", "https://r/claude", None, "");
+        let env = scratch_env(
+            "relay",
+            "CSSWITCH_RELAY_KEY",
+            "sk-y",
+            "https://r/claude",
+            None,
+            "",
+        );
         assert!(!env.iter().any(|(k, _)| k == "CSSWITCH_RELAY_THINKING"));
     }
 
