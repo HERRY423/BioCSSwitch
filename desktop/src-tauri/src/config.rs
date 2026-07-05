@@ -120,6 +120,9 @@ pub struct Config {
     /// 未验证或未通过时，前端 pack 列表会显示"实验中"chip，让用户知道功能可能不生效。
     #[serde(default)]
     pub verification: BTreeMap<String, String>,
+    /// 一次性迁移提示（#9 甲：回填默认模型后告知用户）。get_config 读后清空。
+    #[serde(default)]
+    pub pending_notice: Option<String>,
 }
 
 impl Default for Config {
@@ -139,6 +142,7 @@ impl Default for Config {
             task_routes: BTreeMap::new(),
             probe_results: BTreeMap::new(),
             verification: BTreeMap::new(),
+            pending_notice: None,
         }
     }
 }
@@ -274,6 +278,7 @@ pub fn migrate_v1_to_v2(mut legacy: crate::config_legacy::ConfigV1) -> Config {
         task_routes: BTreeMap::new(),
         probe_results: BTreeMap::new(),
         verification: BTreeMap::new(),
+        pending_notice: None,
     }
 }
 
@@ -444,7 +449,14 @@ pub fn load_from(dir: &Path) -> io::Result<Config> {
                         format!("旧 config 解析失败：{e}"),
                     )
                 })?;
-            let cfg = normalize_active(migrate_v1_to_v2(legacy));
+            let mut cfg = normalize_active(migrate_v1_to_v2(legacy));
+            let filled = backfill_relay_models(&mut cfg);
+            if !filled.is_empty() {
+                cfg.pending_notice = Some(format!(
+                    "已为 {} 个旧配置补上默认模型（可在连接编辑修改）。",
+                    filled.len()
+                ));
+            }
             save_to(dir, &cfg)?; // 落盘为 v2（幂等，下次读走 V2 分支）
             Ok(cfg)
         }
@@ -455,7 +467,17 @@ pub fn load_from(dir: &Path) -> io::Result<Config> {
                     format!("config.json 解析失败：{e}"),
                 )
             })?;
-            Ok(normalize_active(cfg))
+            let mut cfg = normalize_active(cfg);
+            let filled = backfill_relay_models(&mut cfg);
+            if !filled.is_empty() {
+                // 甲迁移：回填空 model 的 relay，落盘一次（幂等），提示留到 get_config 读后清。
+                cfg.pending_notice = Some(format!(
+                    "已为 {} 个旧配置补上默认模型（可在连接编辑修改）。",
+                    filled.len()
+                ));
+                save_to(dir, &cfg)?;
+            }
+            Ok(cfg)
         }
     }
 }
@@ -473,6 +495,28 @@ fn normalize_active(mut cfg: Config) -> Config {
         cfg.active_id.clear();
     }
     cfg
+}
+
+/// 甲迁移（修 #9 P1-a）：relay 家族空 model → 回填模板 builtin_models 首项（旗舰默认）。
+/// native 与无默认的 custom（builtin 空）不动。返回被回填的 profile 名，供一次性提示。幂等。
+fn backfill_relay_models(cfg: &mut Config) -> Vec<String> {
+    let mut changed = Vec::new();
+    for p in cfg.profiles.iter_mut() {
+        if !p.model.trim().is_empty() {
+            continue;
+        }
+        let adapter = crate::templates::adapter_for(&p.template_id);
+        if adapter == "deepseek" || adapter == "qwen" {
+            continue; // native 不需要
+        }
+        if let Some(def) =
+            crate::templates::by_id(&p.template_id).and_then(|t| t.builtin_models.first())
+        {
+            p.model = (*def).to_string();
+            changed.push(p.name.clone());
+        }
+    }
+    changed
 }
 
 /// 原子写 `dir/config.json`（0600）。目录/目标文件是符号链接则拒绝。
@@ -600,6 +644,49 @@ mod tests {
             ..c.clone()
         };
         assert!(c2.active_profile().is_none());
+    }
+
+    #[test]
+    fn backfill_fills_empty_relay_model_from_template_default() {
+        let mut cfg = Config {
+            profiles: vec![
+                Profile {
+                    id: "p1".into(),
+                    name: "我的GLM".into(),
+                    template_id: "glm".into(),
+                    model: String::new(), // 空 → 回填旗舰默认
+                    ..Default::default()
+                },
+                Profile {
+                    id: "p2".into(),
+                    name: "已选".into(),
+                    template_id: "glm".into(),
+                    model: "glm-4.6".into(), // 非空 → 不动
+                    ..Default::default()
+                },
+                Profile {
+                    id: "p3".into(),
+                    name: "自定义空".into(),
+                    template_id: "custom".into(),
+                    model: String::new(), // custom 无默认 → 不回填（激活时另拦）
+                    ..Default::default()
+                },
+                Profile {
+                    id: "p4".into(),
+                    name: "DS".into(),
+                    template_id: "deepseek".into(),
+                    model: String::new(), // native → 不回填
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let changed = backfill_relay_models(&mut cfg);
+        assert_eq!(changed, vec!["我的GLM".to_string()]);
+        assert_eq!(cfg.profile_by_id("p1").unwrap().model, "glm-5.2");
+        assert_eq!(cfg.profile_by_id("p2").unwrap().model, "glm-4.6");
+        assert_eq!(cfg.profile_by_id("p3").unwrap().model, "");
+        assert_eq!(cfg.profile_by_id("p4").unwrap().model, "");
     }
 
     #[test]

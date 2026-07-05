@@ -31,6 +31,7 @@ pub enum ProbeOutcome {
     Ok,                     // 200：可提交
     Auth(u16),              // 401/403：key/权限有误，不提交、不回列表
     ModelError(u16),        // 400/404/422：模型不被接受，不提交
+    Unsupported(u16),       // 405：端点明确不提供该探测（GET /v1/models 不支持）——「发现不支持」
     Ambiguous(Option<u16>), // 429/5xx/其它：无法确认，不提交、给「跳过验证」出口
     NoResponse,             // 网络不通 / 无响应
 }
@@ -41,8 +42,20 @@ pub fn classify(status: Option<u16>) -> ProbeOutcome {
         Some(200) => ProbeOutcome::Ok,
         Some(c @ (401 | 403)) => ProbeOutcome::Auth(c),
         Some(c @ (400 | 404 | 422)) => ProbeOutcome::ModelError(c),
+        Some(405) => ProbeOutcome::Unsupported(405),
         Some(c) => ProbeOutcome::Ambiguous(Some(c)), // 429 / 5xx / 其它
         None => ProbeOutcome::NoResponse,
+    }
+}
+
+/// 「获取模型」降级 source 语义（纯函数，供 fetch_models 用；spec v3 §3.4.3）：
+/// 4xx（端点不接受/不提供该发现请求）→ "unsupported"（端点未提供模型列表，用内置）；
+/// 429/5xx/无响应 → "network"（上游临时/网络问题，用内置可重试）。
+/// Auth(401/403) 不进此函数：fetch_models 对 Auth 直接报错，绝不掩盖坏 key。
+pub fn discovery_fallback_source(outcome: &ProbeOutcome) -> &'static str {
+    match outcome {
+        ProbeOutcome::ModelError(_) | ProbeOutcome::Unsupported(_) => "unsupported",
+        _ => "network",
     }
 }
 
@@ -74,6 +87,7 @@ pub fn scratch_env(
     key: &str,
     base_url: &str,
     model: Option<&str>,
+    relay_thinking: &str,
 ) -> Vec<(String, String)> {
     let mut v = vec![(key_env.to_string(), key.to_string())];
     if !base_url.is_empty() {
@@ -83,6 +97,12 @@ pub fn scratch_env(
         if !m.is_empty() {
             v.push(("CSSWITCH_RELAY_MODEL".to_string(), m.to_string()));
         }
+    }
+    if !relay_thinking.is_empty() {
+        v.push((
+            "CSSWITCH_RELAY_THINKING".to_string(),
+            relay_thinking.to_string(),
+        ));
     }
     v
 }
@@ -97,6 +117,7 @@ pub struct ScratchTarget<'a> {
     pub base_url: &'a str,
     pub key: &'a str,
     pub model: Option<&'a str>,
+    pub relay_thinking: &'a str, // relay thinking 策略（模板 thinking_policy），非空注入 CSSWITCH_RELAY_THINKING
 }
 
 /// 起一个临时代理并探测，探完杀净。**不碰 config / AppState / 正式代理**（修 P1-1/P1-2）。
@@ -137,7 +158,13 @@ pub fn scratch_probe(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // key/base_url/model 经 env 注入（绝不进 argv，避免 ps 泄露）；native 不带 relay base。
-    for (k, v) in scratch_env(target.key_env, target.key, target.base_url, target.model) {
+    for (k, v) in scratch_env(
+        target.key_env,
+        target.key,
+        target.base_url,
+        target.model,
+        target.relay_thinking,
+    ) {
         cmd.env(k, v);
     }
     let child = match cmd.spawn() {
@@ -225,15 +252,40 @@ mod tests {
         assert_eq!(classify(Some(403)), ProbeOutcome::Auth(403));
         assert_eq!(classify(Some(404)), ProbeOutcome::ModelError(404));
         assert_eq!(classify(Some(400)), ProbeOutcome::ModelError(400));
+        // 405 Method Not Allowed = 端点明确不提供该探测（GET /v1/models 不支持）→ 独立语义，
+        // 不再混进 Ambiguous「其它」。修 spec v3 §3.4.2：405 曾被误标网络故障。
+        assert_eq!(classify(Some(405)), ProbeOutcome::Unsupported(405));
         assert_eq!(classify(Some(429)), ProbeOutcome::Ambiguous(Some(429)));
         assert_eq!(classify(Some(502)), ProbeOutcome::Ambiguous(Some(502)));
         assert_eq!(classify(None), ProbeOutcome::NoResponse);
     }
 
     #[test]
+    fn discovery_fallback_source_splits_unsupported_from_network() {
+        // 「获取模型」降级语义（spec v3 §3.4.3）：4xx=端点不提供发现（unsupported）；
+        // 5xx/429/无响应=上游临时/网络（network）。用于前端区分提示，不掩盖坏 key（Auth 另处理）。
+        assert_eq!(
+            discovery_fallback_source(&ProbeOutcome::ModelError(404)),
+            "unsupported"
+        );
+        assert_eq!(
+            discovery_fallback_source(&ProbeOutcome::Unsupported(405)),
+            "unsupported"
+        );
+        assert_eq!(
+            discovery_fallback_source(&ProbeOutcome::Ambiguous(Some(429))),
+            "network"
+        );
+        assert_eq!(
+            discovery_fallback_source(&ProbeOutcome::NoResponse),
+            "network"
+        );
+    }
+
+    #[test]
     fn scratch_env_native_uses_native_key_env_and_no_relay_base() {
         // native：key 进 DEEPSEEK_API_KEY，绝不设 CSSWITCH_RELAY_BASE_URL（否则会被当中转站）。
-        let env = scratch_env("DEEPSEEK_API_KEY", "sk-x", "", None);
+        let env = scratch_env("DEEPSEEK_API_KEY", "sk-x", "", None, "");
         assert_eq!(
             env,
             vec![("DEEPSEEK_API_KEY".to_string(), "sk-x".to_string())]
@@ -242,7 +294,13 @@ mod tests {
 
     #[test]
     fn scratch_env_relay_sets_base_url_and_model() {
-        let env = scratch_env("CSSWITCH_RELAY_KEY", "sk-y", "https://r/claude", Some("m1"));
+        let env = scratch_env(
+            "CSSWITCH_RELAY_KEY",
+            "sk-y",
+            "https://r/claude",
+            Some("m1"),
+            "",
+        );
         assert_eq!(
             env,
             vec![
@@ -254,6 +312,24 @@ mod tests {
                 ("CSSWITCH_RELAY_MODEL".to_string(), "m1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn scratch_env_relay_injects_thinking_policy() {
+        let env = scratch_env(
+            "CSSWITCH_RELAY_KEY",
+            "sk-y",
+            "https://r/claude",
+            Some("m1"),
+            "enabled",
+        );
+        assert!(env.contains(&("CSSWITCH_RELAY_THINKING".to_string(), "enabled".to_string())));
+    }
+
+    #[test]
+    fn scratch_env_empty_thinking_not_injected() {
+        let env = scratch_env("CSSWITCH_RELAY_KEY", "sk-y", "https://r/claude", None, "");
+        assert!(!env.iter().any(|(k, _)| k == "CSSWITCH_RELAY_THINKING"));
     }
 
     #[test]

@@ -205,5 +205,134 @@ class RelayProvider(unittest.TestCase):
         self.assertIn("claude-opus-4-8", ids)
 
 
+class ThinkingNormalization(unittest.TestCase):
+    """thinking 归一化的 provider gate（spec v3 §3.1，拆两条独立处理）。
+
+    代理层只有 deepseek / relay 进入 _handle_anthropic；glm/xiaomi/硅基/openrouter/kimi/minimax
+    在代理层均为 provider=relay（靠 base_url 区分），故此处对 relay 的断言即覆盖 §3.5 test 2 的
+    「4 家 relay 回归门禁」。事实依据：MiniMax 官方 Anthropic 端点认 adaptive/disabled、不认 auto，
+    故 auto→adaptive 对 relay 保留；forced→disabled 是 DeepSeek flash 特有，只 gate 到 deepseek。
+    """
+
+    # (A) 强制 tool_choice(any/tool) → disabled：仅 deepseek
+    def test_deepseek_forced_tool_choice_disables_thinking(self):
+        body = {"tool_choice": {"type": "any"}, "thinking": {"type": "auto"}}
+        out = cs.normalize_thinking(body, "deepseek")
+        self.assertEqual(out["thinking"], {"type": "disabled"})
+
+    def test_relay_forced_tool_choice_not_disabled(self):
+        # relay 不被强注 disabled（各中转站上游自理）；auto 仍归一到 adaptive。
+        body = {"tool_choice": {"type": "tool", "name": "x"}, "thinking": {"type": "auto"}}
+        out = cs.normalize_thinking(body, "relay")
+        self.assertNotEqual(out["thinking"].get("type"), "disabled")
+        self.assertEqual(out["thinking"]["type"], "adaptive")
+
+    def test_relay_forced_without_thinking_not_injected(self):
+        # relay + 强制工具 + 无 thinking → 不注入 thinking（回归：不再强注 disabled）。
+        body = {"tool_choice": {"type": "any"}}
+        out = cs.normalize_thinking(body, "relay")
+        self.assertNotIn("thinking", out)
+
+    # (B) auto → adaptive：deepseek 与 relay 都做
+    def test_deepseek_auto_becomes_adaptive(self):
+        body = {"thinking": {"type": "auto"}}
+        out = cs.normalize_thinking(body, "deepseek")
+        self.assertEqual(out["thinking"]["type"], "adaptive")
+
+    def test_relay_auto_becomes_adaptive(self):
+        body = {"thinking": {"type": "auto"}}
+        out = cs.normalize_thinking(body, "relay")
+        self.assertEqual(out["thinking"]["type"], "adaptive")
+
+    # 回归：非 auto 的 thinking 一律原样保留（不臆改）
+    def test_relay_non_auto_thinking_preserved(self):
+        body = {"thinking": {"type": "enabled", "budget_tokens": 1024}}
+        out = cs.normalize_thinking(body, "relay")
+        self.assertEqual(out["thinking"], {"type": "enabled", "budget_tokens": 1024})
+
+    def test_noop_when_no_thinking_and_no_forcing(self):
+        body = {"messages": []}
+        out = cs.normalize_thinking(body, "relay")
+        self.assertNotIn("thinking", out)
+
+    # relay thinking 策略 "enabled"（如 Kimi：模型强制 thinking.type=enabled，真机 §3.5 验证）
+    def test_relay_enabled_policy_auto_becomes_enabled(self):
+        body = {"thinking": {"type": "auto"}, "max_tokens": 2048}
+        out = cs.normalize_thinking(body, "relay", "enabled")
+        self.assertEqual(out["thinking"]["type"], "enabled")
+        self.assertGreater(out["thinking"]["budget_tokens"], 0)
+        self.assertLess(out["thinking"]["budget_tokens"], 2048)
+
+    def test_relay_enabled_policy_injects_when_missing(self):
+        # Kimi 连「缺 thinking」都 400，故强制注入 enabled。
+        body = {"max_tokens": 2048}
+        out = cs.normalize_thinking(body, "relay", "enabled")
+        self.assertEqual(out["thinking"]["type"], "enabled")
+
+    def test_relay_enabled_policy_preserves_existing_enabled(self):
+        body = {"thinking": {"type": "enabled", "budget_tokens": 512}, "max_tokens": 2048}
+        out = cs.normalize_thinking(body, "relay", "enabled")
+        self.assertEqual(out["thinking"], {"type": "enabled", "budget_tokens": 512})
+
+    def test_relay_enabled_budget_stays_below_max_tokens(self):
+        body = {"thinking": {"type": "auto"}, "max_tokens": 100}
+        out = cs.normalize_thinking(body, "relay", "enabled")
+        self.assertLess(out["thinking"]["budget_tokens"], 100)
+        self.assertGreaterEqual(out["thinking"]["budget_tokens"], 1)
+
+    def test_relay_adaptive_policy_still_auto_to_adaptive(self):
+        # 默认策略（adaptive，如 MiniMax）不变。
+        body = {"thinking": {"type": "auto"}}
+        out = cs.normalize_thinking(body, "relay", "adaptive")
+        self.assertEqual(out["thinking"]["type"], "adaptive")
+
+    def test_deepseek_unaffected_by_relay_thinking_arg(self):
+        # relay_thinking 只对 relay 生效；deepseek 行为不因该参数改变。
+        body = {"tool_choice": {"type": "any"}, "thinking": {"type": "auto"}}
+        out = cs.normalize_thinking(body, "deepseek", "enabled")
+        self.assertEqual(out["thinking"], {"type": "disabled"})
+
+
+class BuildModelsResponse(unittest.TestCase):
+    def setUp(self):
+        self._saved = (cs.PROV, cs.PROV_NAME, cs.RELAY_FORCE_MODEL)
+
+    def tearDown(self):
+        cs.PROV, cs.PROV_NAME, cs.RELAY_FORCE_MODEL = self._saved
+
+    def test_force_returns_single_shell(self):
+        # force（Science 常驻代理）：/v1/models 只返回一个壳，display_name=真实模型名。
+        cs.PROV = {"models_url": "https://r/v1/models"}
+        cs.PROV_NAME = "relay"
+        cs.RELAY_FORCE_MODEL = "glm-5.2"
+        code, body = cs.build_models_response()
+        self.assertEqual(code, 200)
+        self.assertEqual(
+            body["data"],
+            [{
+                "type": "model", "id": "claude-opus-4-8",
+                "display_name": "glm-5.2", "supports_tools": None,
+                "created_at": "2026-01-01T00:00:00Z",
+            }],
+        )
+        self.assertEqual(body["first_id"], "claude-opus-4-8")
+        self.assertEqual(body["last_id"], "claude-opus-4-8")
+        self.assertFalse(body["has_more"])
+
+    def test_not_forced_falls_back_to_source(self):
+        # 未 force（app 获取模型的临时代理）：仍回源拿真实 id 供用户选（两个消费者切分）。
+        cs.PROV = {"models_url": "https://r/v1/models"}
+        cs.PROV_NAME = "relay"
+        cs.RELAY_FORCE_MODEL = None
+        saved_fetch = cs.fetch_relay_models
+        cs.fetch_relay_models = lambda: [{"type": "model", "id": "glm-4.6"}]
+        try:
+            code, body = cs.build_models_response()
+        finally:
+            cs.fetch_relay_models = saved_fetch
+        self.assertEqual(code, 200)
+        self.assertEqual(body["data"][0]["id"], "glm-4.6")
+
+
 if __name__ == "__main__":
     unittest.main()

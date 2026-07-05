@@ -117,3 +117,52 @@
 **其它 roadmap（非 bug）**：
 - **python-ectomy**：翻译代理移到 Rust（axum），拔掉 python（node 已在 v0.1.4 拔除），最终零外部运行时。**落地方式（2026-07-03 定）= vendor cc-switch 的 MIT `transform*.rs` 拿广覆盖**（见 #8、`verified-facts.md` 事实 5）。
 - Intel（x86_64）/ universal 构建；可选正式签名 + Apple 公证。
+
+---
+
+## 9. 模型选择器显示 claude / opus（用户 2026-07-04 批次，⭐高优先：先修再发 v0.3.2）
+
+> **状态：已实现 + 真机验证通过，已 merge 进 main（2026-07-04，分支 `feat/relay-model-shell` 8 commit FF 合入），待随 v0.3.2 发布。** 真机证据：沙箱 Science 顶部选择器显示真实模型名 `glm-5.2`（非 claude/opus），代理 `/v1/models` 在 force 时返回单壳 `{id:claude-opus-4-8, display_name:真实名}`；铁律全程守住（8765 与真实目录未碰）。对应用户 bug 清单 #11（智谱等显示 claude）+ #12 显示部分（自定义显示 opus）。**#12 的校验部分（自定义 scratch 探测误判 Ambiguous）仍待复现，未在本轮解决。**
+>
+> **修复摘要（对齐 deepseek 借壳 + cc-switch 自填范式，spec/plan 见本地 `docs/superpowers/`，git 忽略）**：① 层二＝代理 `build_models_response` 在 `RELAY_FORCE_MODEL` 设时返回单壳（`claude-opus-4-8` + `display_name`＝真实模型名），出站由 `resolve_model` 的 force 分支覆盖、零改动；② 层一＝全 relay 统一 FIXED（GLM/OpenRouter 也 `requires_model_override=true`），模型控件从 `<select>` 换成 `<input list>+<datalist>`（下拉精选＋自填兜底，`custom` 终于能填模型名）；③ 各家 `builtin_models` 官方核定（GLM→`glm-5.2`、MiniMax→`MiniMax-M3`、硅基→`DeepSeek-V4-Pro` 等，硅基 Anthropic `/v1/messages` 真机 200）；④ 后端 `relay_missing_model` 守卫接 create/edit/activate（不变量不可绕过）；⑤ 存量空 model 的 relay 加载时回填模板默认＋一次性提示（甲迁移）；⑥ 模型名 trim 规范化。原设计如下（历史留存）：
+
+- **现象**：① 智谱 GLM 等 relay 家在 Science 顶部模型选择器里「显示的是 claude」；② 自定义（填 claude 中转 API）「显示的是 opus」；用户说「自定义的模型也有问题」。
+- **根因（`proxy/csswitch_proxy.py` PROVIDERS 注释已证实，逆向标记 s0/ZjO/XjO/hB_）**：Science 模型面板有**二进制写死的两道硬规则**——① 可选模型 id **必须 `claude-` 开头**；② 只有 `claude-{opus|sonnet|haiku}-<纯数字版本>` 进**主列表**（每 family 留一个），其余进「More models」折叠。**CSSwitch 改不了 Science 这个 UI**，只能控制代理 `/v1/models` 返回什么。
+  - **deepseek（native）**：`models` **借壳** `claude-opus-4-8`/`claude-haiku-4-5` + `display_name`「DeepSeek V4 Pro/Flash」，`model_map` 出站还原真实 id → Science 显示真实名，正常。
+  - **relay + `requires_model_override=false`（GLM/openrouter）**：`passthrough=True`，`fetch_relay_models` 回源拉**真实 id**（`glm-4.6` 非 claude-）→ **被 Science 硬规则过滤** → 选择器回退显示 claude 默认。= **#11 根因**。
+  - **relay + `requires_model_override=true`（小米/硅基/kimi/minimax/自定义）**：面板选了模型→`RELAY_FORCE_MODEL` override 实际走选中模型，但 Science 选择器**仍显示 claude**；自定义 `default_model="claude-opus-4-8"` → **#12「显示 opus」**。
+- **修复方案（待定，倾向 A+B 结合，对齐 deepseek 成熟做法）**：让 relay 也**借壳**——`fetch_relay_models`/`build_models_response` 给回源真实模型分配 `claude-{family}-<数字>` 壳 id（进主列表）+ `display_name=真实模型名`，出站用动态 `model_map`（壳→真实 id）还原。
+  - **A**：全 relay 回源模型借壳；主列表每 family 限 1（最多 3 个真实名进主列表，其余 More models）——多模型的 GLM/openrouter 需要。
+  - **B**：`requires_model_override=true` 的家只借**选中的那一个**模型壳（简单，kimi/minimax/小米/硅基/自定义适用）。
+  - **C（治标）**：不改协议，只在 CSSwitch app 文案说明「Science 顶部显示 claude 是外壳，实际走你选的模型」。
+  - **坑**：壳 id 要稳定、每 family 分配、动态生成；现 `passthrough` 不映射，借壳后出站 `model_map` 还原要与 passthrough 协同。需一份 spec；代理 `/v1/models` 返回可不启 Science 单验，整链看 Science 显示须用户在场。
+
+## 10. Kimi / MiniMax 需不需要像千问/DS 那样「翻译」？→ 不需要，已做（原生透传）
+
+> **结论（可直接回用户）**：**不需要翻译，已经做了。**
+
+- 「翻译」（Anthropic ↔ OpenAI 互转，`_handle_openai` + `anthropic_to_openai`）**只对 `mode:"openai"` 的千问（qwen）**：DashScope 只提供 OpenAI 兼容端点，故必须转。
+- **deepseek** 是 `mode:"anthropic"` 原生透传、不翻译。
+- **Kimi / MiniMax 是 relay = `mode:"anthropic"`**，官方提供 `/anthropic` 兼容端点，走原生 Anthropic 透传（`_handle_anthropic`），**零翻译**。真机已证：两家 `/v1/messages` 直接透传 200（thinking 各自策略见 v0.3.2 实现：Kimi=enabled / MiniMax=adaptive）。
+
+## 11. 用户反馈 bug 清单（2026-07-04 批次，源 `~/Desktop/已知bug/已知bug.md`，12 条分诊）
+
+> **本文件（`docs/known-issues.md`）即「你我都可改的共享追踪文档」**（git 跟踪，你我都能编辑）。以下把用户新清单 12 条映射到根因/已有条目，后续在此更新处置。
+
+| # | 现象 | 分诊 / 归属 |
+|---|---|---|
+| 1 | Claude 不可用重试；用 ds api，客户说不开梯子就报错 | 待辨：纯文本推理是否也需梯子（ds 国内直连，Science 静态资源/校验可能仍触外网）。需复现 |
+| 2 | **最严重**：websearch 拉下来没法输出就中断 | 模型端 DSML 泄漏（tool_use 吐成文本）→ 见 DSML shim 轨道；ds 透传把工具调用漏成 `<｜｜DSML｜｜>` 卡死 |
+| 3 | 国内反代中转站，回不了；"session no longer valid" | 架构边界：claude.ai 服务端功能被 401 隔离（虚拟登录）。非代理 bug |
+| 4 | 挂 csswitch 能登进去，但无输出/一晃而过（多人报告） | 疑可修代理 bug，需 proxy.log 复现 |
+| 5 | nature skills / GitHub 第三方插件装不了 | 架构边界：claude.ai 托管能力被 401 隔离 |
+| 6 | DSML tool_calls 泄漏成文本（截图） | 同 #2，模型端 DSML |
+| 7 | Artifact failed（截图） | 待辨（信息不全） |
+| 8 | Directory connectors unavailable / session expired | 架构边界：目录连接器是 claude.ai 服务端功能 |
+| 9 | 弹 sign in 但点一下直接进（没真登录） | 架构边界/预期：虚拟登录表现为"未登录门票" |
+| 10 | 截图（待补） | 待辨 |
+| **11** | **模型选择器显示不正确**（小米/智谱/openrouter/硅基/kimi/minimax 都有） | **✅ 已修（见 #9，真机验证 `glm-5.2` 正确显示，merge 进 main 待 v0.3.2 发）** |
+| **12** | **自定义 API「无法确认(网络/上游繁忙)，未切换，可重试或跳过验证」**；用户说 curl 没问题 | 显示 opus 部分 **✅ 已修（→ #9：custom 现可自填模型名 + 借壳显示真实名）**；校验部分（自定义 relay 的 scratch 探测把可用端点误判为 Ambiguous）**仍需复现**：拿用户的自定义 base_url/流程，看 scratch Message/Models 探测状态码为何非 200；curl 通但代理探测不通 = 探测路径/鉴权头/thinking 注入差异 |
+
+- **三大根因归类**（沿用 2026-07-03 分诊，`findings/2026-07-03-user-reported-bugs-triage.md`）：① 架构边界（claude.ai 服务端功能被 401 隔离）=#3/#5/#8/#9；② 模型端（DeepSeek 透传把 tool_use 吐成文本卡死）=#2/#6 最严重；③ 疑可修代理 bug=#4（输出一晃而过）/#12（自定义校验）/#1（梯子）。
+- **下一步优先级（2026-07-04 更新）**：~~先修 #9 模型选择器~~ **✅ #9 已实现 + 真机验证 + merge 进 main**。剩：① 补 README/About → 走 v0.3.2 发版（版本 bump/tag/dmg/Release）；② #12 校验部分（自定义 scratch 误判）待复现；③ Kimi/MiniMax 已就绪随 v0.3.2 一起发。
