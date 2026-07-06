@@ -6,12 +6,20 @@
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-07-06
+
+> 主题：**自定义 OpenAI Responses provider 预览支持**。这版新增 OpenAI Responses 兼容端点路径，并针对 DashScope Responses 兼容模式收紧工具调用与输出预算边界。
+
 ### 新增 Added
 - **自定义 OpenAI Responses 兼容端点**：新增「自定义 OpenAI Responses」来源，用户填写 OpenAI 兼容 base root、模型与 key 后，代理自动拼接 `/responses` 与 `/models`，并在 Anthropic Messages 与 OpenAI Responses 之间做基础转换。
 
+### 修复 Fixed
+- **DashScope Responses 工具请求稳定性**：带工具的 Responses 请求会保守降级强制工具选择并收紧输出预算，避免兼容层因工具选择或过大输出预算拒绝请求。
+- **DashScope Responses 工具 schema 兼容性**：过滤当前兼容模式不接受的内置搜索工具定义，并对工具参数根 schema 做保守归一化，避免整个请求被上游 schema 校验拒绝。
+
 ### 说明 Notes
 - Responses 路径当前以非流式上游请求完成后本地回放 Anthropic SSE，尚不宣称原生 Responses SSE 增量转换。
-- Responses 路径会对 `max_output_tokens` 应用 65536 上限，并将强制工具选择保守降级为 `auto`，以兼容更严格的 Responses 兼容端点。
+- Responses 路径会对 `max_output_tokens` 应用上限，并将强制工具选择保守降级为 `auto`，以兼容更严格的 Responses 兼容端点；DashScope 工具请求使用更保守的预算。
 
 ## [0.3.5] — 2026-07-06
 
