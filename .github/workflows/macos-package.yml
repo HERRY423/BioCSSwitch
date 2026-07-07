@@ -1,0 +1,113 @@
+name: macos-package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "在当前 tag 上把构建出的 DMG 挂到 GitHub Release"
+        required: false
+        default: false
+        type: boolean
+      strict_expert:
+        description: "要求 gold calibration 全部通过 expert approval"
+        required: false
+        default: false
+        type: boolean
+      require_provider_matrix:
+        description: "要求至少 2 个 provider、每个 repeat >= 3"
+        required: false
+        default: false
+        type: boolean
+      canary_evidence_path:
+        description: "可选：仓库内 canary evidence JSON 的相对路径"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-macos-arm64:
+    name: Build DMG on macOS runner
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
+      STRICT_EXPERT: ${{ github.event.inputs.strict_expert }}
+      REQUIRE_PROVIDER_MATRIX: ${{ github.event.inputs.require_provider_matrix }}
+      CANARY_EVIDENCE_PATH: ${{ github.event.inputs.canary_evidence_path }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Print toolchain versions
+        shell: bash
+        run: |
+          python3 --version
+          node --version
+          npm --version
+          cargo --version
+          gh --version
+
+      - name: Build and verify BioCSSwitch
+        shell: bash
+        run: |
+          args=(--build)
+          if [[ "${STRICT_EXPERT:-}" == "true" ]]; then
+            args+=(--strict-expert)
+          fi
+          if [[ "${REQUIRE_PROVIDER_MATRIX:-}" == "true" ]]; then
+            args+=(--require-provider-matrix)
+          fi
+          if [[ -n "${CANARY_EVIDENCE_PATH:-}" ]]; then
+            args+=(--canary-evidence "$CANARY_EVIDENCE_PATH")
+          fi
+          bash scripts/release-verify.sh "${args[@]}"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BioCSSwitch-macos-arm64-${{ github.run_id }}
+          path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish DMG to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          notes_file="docs/releases/${tag}.md"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            if [[ -f "$notes_file" ]]; then
+              gh release create "$tag" --title "BioCSSwitch ${tag}" --notes-file "$notes_file"
+            else
+              gh release create "$tag" --title "BioCSSwitch ${tag}" --generate-notes
+            fi
+          fi
+          gh release upload "$tag" desktop/src-tauri/target/release/bundle/dmg/*.dmg --clobber

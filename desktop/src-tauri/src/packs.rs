@@ -437,6 +437,7 @@ pub const BIOMED_TASKS: &[(&str, &str, &str)] = &[
     ("clinical-trials",  "临床试验检索",         "NCT / 试验设计 benchmark；工具调用密集"),
     ("target-discovery", "靶点发现 / 老药新用",  "Open Targets / ChEMBL 组合查询；工具调用密集"),
     ("omics-code",       "组学代码 / 数据分析",  "DESeq2 / limma / clusterProfiler 脚本生成；代码保真优先"),
+    ("spatial-omics",     "空间转录组 / 稀有细胞", "Visium / Xenium / CosMx / MERFISH 平台感知配方；稀有细胞与 IPF/KRT17 验证"),
     ("long-context-pdf", "长上下文 PDF",         "全文 PDF 分析；长上下文优先"),
     ("tool-heavy",       "工具调用密集任务",     "多源多轮拉取；tool_use 稳定性优先"),
     ("evidence-check",   "引用 / 证据审计",      "PMID/DOI/NCT 校验；JSON 稳定性优先"),

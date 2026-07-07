@@ -1,0 +1,23 @@
+{
+  "id": "bio-critique",
+  "name": "反证与批判引擎",
+  "description": "科学批判合作者：检测结论过度外推（物种/人群/分期/剂量/终点/时间/机制 7 类外推模式）、方法学缺陷扫描（10 项检查清单）、claim 级可信度评分（1-5 星）、冲突文献发现、撤回状态检查和最小反证实验设计。消费 evidence_graph 的结构化输出，在已有证据审计基础上叠加主动批判层。",
+  "version": "0.1.0",
+  "requires_env": [],
+  "optional_env": ["NCBI_API_KEY", "NCBI_EMAIL"],
+  "depends_on": ["bio-audit"],
+  "servers": [
+    {
+      "name": "bio-critique",
+      "script": "packs/bio-critique/critique_server.py",
+      "env_pass": ["NCBI_API_KEY", "NCBI_EMAIL"]
+    }
+  ],
+  "skills": [
+    {
+      "id": "scientific-critique",
+      "src": "packs/bio-critique/skills/scientific-critique"
+    }
+  ]
+}
+

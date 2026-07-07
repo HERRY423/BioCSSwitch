@@ -4,7 +4,7 @@
   "description": "8 个预设的科研任务模式：文献综述、靶点发现 / 药物重定位、GEO 数据集初筛、端到端单细胞分析、临床试验 landscape、reviewer response、grant Specific Aims，以及横切的不确定性优先（uncertainty-first）收尾标准。每个模板是一个 Skill，靠触发词进入并组合对应 bio-* pack 工具。",
   "version": "0.3.0",
   "requires_env": [],
-  "depends_on": ["bio-lit", "bio-audit", "bio-singlecell", "bio-sc-downstream", "bio-scfm", "bio-sc-atlas"],
+  "depends_on": ["bio-lit", "bio-audit", "bio-singlecell", "bio-sc-downstream", "bio-scfm", "bio-sc-atlas", "bio-spatial"],
   "servers": [],
   "skills": [
     {"id": "lit-review",           "src": "packs/bio-workflows/skills/lit-review"},

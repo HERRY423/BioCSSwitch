@@ -371,6 +371,70 @@ def test_grade_engine():
           r2["strength"] == "conditional" or any("discordant" in w or "不一致" in w for w in r2["warnings"]))
 
 
+def test_critique_engine():
+    """bio-critique: extrapolation, methodology, believability, report, and text entry (offline)."""
+    print("[bio-critique]")
+    cr = _load_server("bio-critique/critique_server.py")
+    claim = {
+        "claim": "Drug X improves overall survival in patients.",
+        "asserted": {"species": "human", "endpoint": "hard-clinical"},
+        "applicability_boundary": {"species": ["animal"], "endpoint": "surrogate", "max_sample_size": 24},
+        "evidence_level": "animal",
+        "verdict": "contested",
+        "conflicts": ["animal evidence only"],
+        "counter_evidence": [],
+    }
+    cc = cr.critique_conclusion(claim_report=claim)
+    ex_ids = {x["rule_id"] for x in cc["extrapolations"]}
+    check("EX-01 animal→human 外推检出", "EX-01" in ex_ids)
+    check("critique_conclusion 给出关注级别", cc["overall_concern_level"] in {"yellow", "orange", "red"})
+    check("metadata flag 检出 n<30", any(f["check_id"] == "METH-03" for f in cc["methodology_flags"]))
+
+    meth = cr.critique_methodology(
+        judgments=[{"check_id": "METH-10", "finding": "critical"}],
+        metadata={"sample_size": 24},
+    )
+    check("METH-03 n<30 自动检测", any(x["check_id"] == "METH-03" for x in meth["auto_detected"]))
+    check("critical 无 reason 有警告", any("METH-10" in w and "requires a reason" in w for w in meth["warnings"]))
+
+    hi = cr.believability_score(
+        evidence_level="RCT",
+        verdict="supported",
+        critique={"extrapolations": [], "methodology_flags": []},
+        methodology={"quality_score": 100},
+    )
+    check("可信度满分场景为五星", hi["score"] == 5)
+    low = cr.believability_score(claim_report=claim, critique=cc)
+    check("仅动物证据 + 人体结论降到两星以下", low["score"] <= 2)
+
+    exp = cr.design_counter_experiment(
+        claim_text=claim["claim"],
+        extrapolations=[{"rule_id": "EX-01"}],
+        boundary=claim["applicability_boundary"],
+    )
+    check("EX-01 反证实验推荐人体 PK/PD", "PK/PD" in exp["design_type"] or "PK/PD" in exp["minimum_sample_size"])
+
+    rct_exp = cr.design_counter_experiment(
+        claim_text="Drug X improves overall survival.",
+        extrapolations=[{"rule_id": "EX-05"}],
+    )
+    check("EX-05 反证实验推荐硬终点 RCT", "随机" in rct_exp["design_type"] or "randomized" in rct_exp["design_type"].lower())
+
+    report = cr.critique_full_report({"claims": [claim]})
+    check("批判报告包含外推", "外推" in report["markdown"])
+
+    text_report = cr.critique_text(
+        text="Mouse xenograft models show Drug X improves survival in patients."
+    )
+    text_rules = {
+        e["rule_id"]
+        for c in text_report["claims"]
+        for e in c.get("extrapolations", [])
+    }
+    check("critique_text 至少拆出 1 条 claim", text_report["claims_extracted"] >= 1)
+    check("critique_text 检出 EX-01", "EX-01" in text_rules)
+
+
 def test_scfm_provenance():
     """scFM 适配层：指纹稳定 + provenance 记录含哈希 + 篡改可检出（离线）。"""
     print("[bio-scfm provenance]")
@@ -491,6 +555,51 @@ def test_sc_atlas_and_scanpy_generator():
               "adata.raw = adata.copy()" in script and 'layer="counts"' in script and "use_raw=True" in script)
 
 
+def test_spatial_recipes():
+    """bio-spatial: platform, rare-cell, spatial FM and IPF/KRT17 recipes (offline)."""
+    print("[bio-spatial recipes]")
+    sp = _load_server("bio-spatial/spatial_server.py")
+    mx = sp.spatial_platform_matrix(platforms=["xenium", "visium_hd"], tissue="lung")
+    check("platform matrix includes Xenium and Visium HD",
+          {r["platform"] for r in mx["platforms"]} == {"xenium", "visium_hd"})
+    check("platform matrix has rare-cell guardrail",
+          any("rare" in r.lower() and "marker" in r.lower() for r in mx["decision_rules"]))
+
+    prep = sp.spatial_preprocess_recipe(platform="xenium", has_matched_histology=True)
+    check("spatial preprocess recipe has stable hash", prep["recipe_hash"].startswith("sha256:"))
+    check("Xenium preprocess audits segmentation/background",
+          "negative_probe_count" in prep["script"] and "segmentation_background_qc" in prep["script"])
+    check("spatial preprocess builds squidpy graph",
+          "spatial_neighbors" in prep["script"] and "nhood_enrichment" in prep["script"])
+
+    deconv = sp.spatial_deconvolution_recipe(platform="xenium", rare_cell_expected=True)
+    check("rare-cell deconvolution auto uses marker_score baseline",
+          deconv["recommended_method"] == "marker_score" and "score_genes" in deconv["script"])
+    check("deconvolution warns against one-model rare-cell claims",
+          any("complex model alone" in g for g in deconv["rare_cell_guardrails"]))
+
+    rare = sp.spatial_rare_cell_recipe(rare_population="KRT17 basaloid epithelial state")
+    check("KRT17 rare-cell defaults include epithelial/IPF markers",
+          {"KRT17", "KRT5", "SPP1"} <= set(rare["params"]["marker_genes"]))
+    check("rare-cell recipe includes stress tests",
+          any("decoy markers" in s.lower() for s in rare["stress_tests"]))
+
+    fm_matrix = sp.spatial_scfm_model_matrix()
+    check("spatial FM matrix includes scGPT-Spatial and Nicheformer",
+          {"scgpt_spatial", "nicheformer"} <= set(fm_matrix["models"]))
+    fm = sp.spatial_scfm_plan(model="scgpt_spatial", platform="visium_hd")
+    check("spatial FM plan is not-runnable skeleton",
+          fm["runnable"] is False and "SystemExit" in fm["script"])
+    check("spatial FM provenance requires baselines",
+          "baseline" in fm["provenance_skeleton"] and "marker_or_deconvolution" in fm["provenance_skeleton"]["baseline"])
+
+    ipf = sp.ipf_krt17_spatial_validation_recipe()
+    check("IPF/KRT17 recipe has KRT17 and SPP1 arms",
+          "KRT17" in " ".join(ipf["params"]["epithelial_markers"]) and "SPP1" in " ".join(ipf["params"]["niche_markers"]))
+    check("IPF/KRT17 report contract avoids mechanism overclaim",
+          any("hypothesis" in x.lower() for x in ipf["reporting_contract"]))
+
+
 def test_privacy_partial_leak():
     """修复 3：隐私红队片段泄露检测 —— 后四位/前三后三/身份证生日段/MRN 片段都算泄露。"""
     print("[privacy partial leak]")
@@ -518,11 +627,13 @@ def main() -> int:
     test_bio_eval_rubric()
     test_gold_calibration_manifest()
     test_grade_engine()
+    test_critique_engine()
     test_scfm_provenance()
     test_singlecell_recipe_expansion()
     test_sc_downstream_recipes()
     test_scfm_phase3_tools()
     test_sc_atlas_and_scanpy_generator()
+    test_spatial_recipes()
     test_privacy_partial_leak()
     print()
     if _fails:

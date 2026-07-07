@@ -76,8 +76,12 @@ DEEPSEEK_API_KEY=... python3 proxy/csswitch_proxy.py --provider deepseek --port 
 # 编译 / 跑 / 打包（desktop/，需 node 装 @tauri-apps/cli；产物含 .app / .dmg）
 cd desktop && npm install         # 首次装 tauri CLI
 npm run tauri dev                 # 开发跑
-npm run tauri build               # 打包 → src-tauri/target/release/bundle/dmg/CSSwitch_<ver>_aarch64.dmg
+npm run tauri build               # 打包 → src-tauri/target/release/bundle/dmg/BioCSSwitch_<ver>_aarch64.dmg
 ```
+
+> Windows 主开发机不必在本地硬装 macOS / cargo 去解决 `.dmg`。仓库内置 [`../.github/workflows/macos-package.yml`](../.github/workflows/macos-package.yml)，用 GitHub Actions 的 `macos-15` runner 自动执行 `node --check desktop/src/main.js` 与 `bash scripts/release-verify.sh --build`，并上传 `BioCSSwitch_<ver>_aarch64.dmg` artifact。
+>
+> 如果已经补齐 canary/provider/strict-expert 这些发版门槛，需要把 `.dmg` 挂到 GitHub Release 时，在目标 tag 上手动运行这条 workflow，并勾选 `publish_release`。
 
 ## 离线回归
 
@@ -131,10 +135,11 @@ registry = "sparse+https://rsproxy.cn/index/"
 # 3. gh/git 前先： export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 ALL_PROXY=http://127.0.0.1:7890
 #    （大写默认 8001 是死的，gh 会误报 token invalid）
 git push origin main
-# 4. 打包 dmg：cd desktop && npm run tauri build
-# 5. tag + Release
+# 4. Windows 主开发机只负责推 tag，不在本地手工出 dmg
 git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
-gh release create vX.Y.Z --title "..." --notes-file <notes> <dmg 路径>
-# 6. 发布前建议 gitleaks 扫（工作树/暂存/历史三处）
+# 5. GitHub Actions: .github/workflows/macos-package.yml（macos-15 runner）自动跑
+#    node --check + bash scripts/release-verify.sh --build，并上传 dmg artifact
+# 6. 若 canary/provider/strict-expert 已补齐，在该 tag 上手动运行 workflow_dispatch，并勾选 publish_release
+# 7. 发布前建议 gitleaks 扫（工作树/暂存/历史三处）
 ```
 当前 dmg 未 Apple 公证（无 APPLE_* 凭证），首次启动右键「打开」；仅 Apple Silicon（arm64）。

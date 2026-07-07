@@ -210,6 +210,94 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
             "required": ["graph_claims"],
         },
     },
+    "critique_conclusion": {
+        "name": "critique_conclusion",
+        "description": "Detect over-extrapolation in a claim using evidence_graph-style structured data",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "claim_report": {"type": "object"},
+                "claim_text": {"type": "string"},
+                "asserted": {"type": "object"},
+                "boundary": {"type": "object"},
+                "language": {"type": "string"},
+            },
+        },
+    },
+    "critique_methodology": {
+        "name": "critique_methodology",
+        "description": "Run the 10-item methodology checklist guard and compute quality score",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "judgments": {"type": "array", "items": {"type": "object"}},
+                "metadata": {"type": "object"},
+            },
+        },
+    },
+    "believability_score": {
+        "name": "believability_score",
+        "description": "Compute claim-level believability stars from evidence, methodology, extrapolation, and conflicts",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "claim_report": {"type": "object"},
+                "critique": {"type": "object"},
+                "methodology": {"type": "object"},
+                "language": {"type": "string"},
+            },
+        },
+    },
+    "find_conflicting_evidence": {
+        "name": "find_conflicting_evidence",
+        "description": "Search PubMed for potential conflicting evidence; returned PMIDs still require verification",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "claim_text": {"type": "string"},
+                "claim_direction": {"type": "string"},
+                "key_entities": {},
+                "current_refs": {"type": "array", "items": {}},
+                "retmax": {"type": "integer"},
+            },
+            "required": ["claim_text"],
+        },
+    },
+    "critique_full_report": {
+        "name": "critique_full_report",
+        "description": "Generate a full Markdown critique report from evidence_graph claims",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "evidence_graph": {},
+                "methodology_judgments": {},
+                "language": {"type": "string"},
+            },
+            "required": ["evidence_graph"],
+        },
+    },
+    "design_counter_experiment": {
+        "name": "design_counter_experiment",
+        "description": "Design a minimal counter-experiment skeleton for an extrapolated claim",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "claim_text": {"type": "string"},
+                "extrapolations": {"type": "array", "items": {"type": "object"}},
+                "boundary": {"type": "object"},
+            },
+            "required": ["claim_text"],
+        },
+    },
+    "critique_text": {
+        "name": "critique_text",
+        "description": "Heuristic quick critique for pasted natural-language conclusions",
+        "input_schema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}, "language": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
     "compile_research_question": {
         "name": "compile_research_question",
         "description": "Compile a vague biomedical question into a structured research task (object/disease/molecule/intervention/endpoints/databases/exclusions/evidence-bar/toolchain)",
@@ -411,6 +499,63 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         "input_schema": {
             "type": "object",
             "properties": {"organism": {"type": "string"}, "dataset_id": {"type": "string"}, "obs_value_filter": {"type": "string"}},
+        },
+    },
+    "spatial_platform_matrix": {
+        "name": "spatial_platform_matrix",
+        "description": "Compare spatial transcriptomics platforms and QC tradeoffs",
+        "input_schema": {
+            "type": "object",
+            "properties": {"platforms": {"type": "array", "items": {"type": "string"}}, "tissue": {"type": "string"}, "goal": {"type": "string"}},
+        },
+    },
+    "spatial_preprocess_recipe": {
+        "name": "spatial_preprocess_recipe",
+        "description": "Generate platform-aware spatial preprocessing and QC recipe",
+        "input_schema": {
+            "type": "object",
+            "properties": {"platform": {"type": "string"}, "has_matched_histology": {"type": "boolean"}, "coordinate_key": {"type": "string"}},
+        },
+    },
+    "spatial_deconvolution_recipe": {
+        "name": "spatial_deconvolution_recipe",
+        "description": "Generate spatial deconvolution or marker-score reference mapping recipe",
+        "input_schema": {
+            "type": "object",
+            "properties": {"method": {"type": "string"}, "platform": {"type": "string"}, "rare_cell_expected": {"type": "boolean"}, "celltype_key": {"type": "string"}},
+        },
+    },
+    "spatial_rare_cell_recipe": {
+        "name": "spatial_rare_cell_recipe",
+        "description": "Generate rare-cell spatial validation recipe with marker scoring and stress tests",
+        "input_schema": {
+            "type": "object",
+            "properties": {"rare_population": {"type": "string"}, "marker_genes": {"type": "array", "items": {"type": "string"}}, "platform": {"type": "string"}},
+        },
+    },
+    "spatial_scfm_model_matrix": {
+        "name": "spatial_scfm_model_matrix",
+        "description": "List spatial foundation models and required baselines",
+        "input_schema": {
+            "type": "object",
+            "properties": {"model": {"type": "string"}},
+        },
+    },
+    "spatial_scfm_plan": {
+        "name": "spatial_scfm_plan",
+        "description": "Generate not-runnable spatial foundation-model skeleton and provenance fields",
+        "input_schema": {
+            "type": "object",
+            "properties": {"model": {"type": "string"}, "platform": {"type": "string"}, "task_type": {"type": "string"}, "spatial_recipe_hash": {"type": "string"}},
+            "required": ["model"],
+        },
+    },
+    "ipf_krt17_spatial_validation_recipe": {
+        "name": "ipf_krt17_spatial_validation_recipe",
+        "description": "Generate IPF/KRT17 spatial niche validation recipe",
+        "input_schema": {
+            "type": "object",
+            "properties": {"platforms": {"type": "array", "items": {"type": "string"}}, "epithelial_markers": {"type": "array", "items": {"type": "string"}}, "niche_markers": {"type": "array", "items": {"type": "string"}}},
         },
     },
 }

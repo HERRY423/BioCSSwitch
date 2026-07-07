@@ -39,12 +39,14 @@ _SERVER_MODULE_PATHS = [
     "bio-gene/ncbi_server.py",
     "bio-audit/evidence_verify_server.py",
     "bio-audit/grade_server.py",
+    "bio-critique/critique_server.py",
     "bio-privacy/phi_server.py",
     "bio-compiler/question_compiler_server.py",
     "bio-singlecell/singlecell_server.py",
     "bio-sc-downstream/sc_downstream_server.py",
     "bio-scfm/scfm_server.py",
     "bio-sc-atlas/atlas_server.py",
+    "bio-spatial/spatial_server.py",
 ]
 
 

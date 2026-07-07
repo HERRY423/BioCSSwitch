@@ -34,6 +34,7 @@ const mockStore = {
   proxy_port: 18991,
   sandbox_port: 8990,
   mode: "proxy",
+  agent_mode: "normal",
   profiles: [
     { id: "p-demo1", name: "我的 GLM", template_id: "glm", category: "cn_official", api_format: "anthropic", base_url: "https://open.bigmodel.cn/api/anthropic", model: "glm-4.6", key: "••••••1234", icon: "glm", icon_color: "#2E6BE6", website_url: "https://open.bigmodel.cn", sort_index: 1, notes: "" },
   ],
@@ -46,7 +47,7 @@ function mockInvoke(cmd, args) {
       return Promise.resolve({
         schema_version: mockStore.schema_version, active_id: mockStore.active_id,
         proxy_port: mockStore.proxy_port, sandbox_port: mockStore.sandbox_port,
-        mode: mockStore.mode, templates: MOCK_TEMPLATES,
+        mode: mockStore.mode, agent_mode: mockStore.agent_mode, templates: MOCK_TEMPLATES,
         profiles: mockStore.profiles.map((p) => ({ ...p })),
       });
     case "list_templates":
@@ -99,6 +100,9 @@ function mockInvoke(cmd, args) {
       return Promise.resolve(null);
     case "set_mode":
       mockStore.mode = args.mode;
+      return Promise.resolve(null);
+    case "set_agent_mode":
+      mockStore.agent_mode = args.mode;
       return Promise.resolve(null);
     case "one_click_login":
       return Promise.resolve({ url: "http://127.0.0.1:8990", msg: "（预览模式：假装已就绪）", action: "started" });
@@ -179,7 +183,7 @@ let statusTimer = null;
 let busy = false;
 let mode = "proxy"; // "proxy" 第三方 | "official" 官方
 // 当前配置快照（get_config 结果）。全 key 绝不在此，只有掩码。
-let state = { profiles: [], templates: [], active_id: "", proxy_port: 18991, sandbox_port: 8990 };
+let state = { profiles: [], templates: [], active_id: "", proxy_port: 18991, sandbox_port: 8990, agent_mode: "normal" };
 let pendingSkipActivateId = null;   // set_active 校验含糊时，允许「跳过验证」再切
 let pendingConfirm = null;          // 危险操作（清 key / 删除）的「再点一次确认」态
 
@@ -335,6 +339,7 @@ async function loadConfig() {
     state.active_id = cfg.active_id || "";
     state.proxy_port = cfg.proxy_port ?? 18991;
     state.sandbox_port = cfg.sandbox_port ?? 8990;
+    state.agent_mode = cfg.agent_mode || "normal";
     els.proxyPort.value = state.proxy_port;
     els.sandboxPort.value = state.sandbox_port;
     applyMode(cfg.mode === "official" ? "official" : "proxy");

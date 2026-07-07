@@ -436,8 +436,15 @@ fn start_proxy_for(
             .arg(port.to_string())
             .arg("--auth-token")
             .arg(&secret)
+            .env(
+                "CSSWITCH_CONFIG_PATH",
+                config::default_dir().join("config.json"),
+            )
             // key 经环境变量注入，绝不作为命令行参数（避免 ps 泄露）。
             .env(launch.key_env, &launch.key);
+        if cfg.agent_mode != "normal" {
+            cmd.env("CSSWITCH_ULTRA_MODE", &cfg.agent_mode);
+        }
         // relay 家族：base_url + 选中模型经环境变量交给代理（均非密钥，但与 key 一致走 env）。
         if !native {
             cmd.env("CSSWITCH_RELAY_BASE_URL", &launch.base_url);
@@ -559,7 +566,8 @@ fn build_get_config(dir: &Path) -> Result<serde_json::Value, String> {
     Ok(json!({
         "schema_version": cfg.schema_version, "active_id": cfg.active_id, "profiles": profiles,
         "templates": build_list_templates(), "proxy_port": cfg.proxy_port,
-        "sandbox_port": cfg.sandbox_port, "mode": cfg.mode, "pending_notice": notice,
+        "sandbox_port": cfg.sandbox_port, "mode": cfg.mode, "agent_mode": cfg.agent_mode,
+        "pending_notice": notice,
     }))
 }
 
@@ -764,6 +772,35 @@ fn set_mode(
             move |c| c.mode = mode
         })
         .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// 切换代理层 agent 编排模式。normal 保持旧路径；ultra_* 由 start_proxy_for 注入代理环境。
+#[tauri::command]
+fn set_agent_mode(
+    state: State<'_, Mutex<AppState>>,
+    lifecycle: State<'_, lifecycle::Lifecycle>,
+    mode: String,
+) -> Result<(), String> {
+    match mode.as_str() {
+        "normal" | "ultra_conservative" | "ultra_deep" => {}
+        _ => return Err(format!(
+            "未知 agent 模式：{mode}（只支持 normal / ultra_conservative / ultra_deep）。"
+        )),
+    }
+    lifecycle.with_serialized(|| {
+        let dir = config::default_dir();
+        config::update(&dir, {
+            let mode = mode.clone();
+            move |c| c.agent_mode = mode
+        })
+        .map_err(|e| e.to_string())?;
+        lifecycle.bump_generation();
+        let mut st = lock(&state);
+        kill_child(&mut st.proxy);
+        st.provider.clear();
+        st.key_fp = 0;
         Ok(())
     })
 }
@@ -2596,6 +2633,7 @@ pub fn run() {
             list_templates,
             set_settings,
             set_mode,
+            set_agent_mode,
             open_official,
             create_profile,
             update_profile_metadata,

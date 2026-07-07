@@ -1,0 +1,23 @@
+{
+  "id": "bio-spatial",
+  "name": "Spatial transcriptomics recipe layer",
+  "description": "Platform-aware spatial transcriptomics recipes for Visium, Visium HD, Xenium, CosMx, MERFISH and Slide-seq. Generates reproducible preprocessing, deconvolution, rare-cell, spatial foundation-model and IPF/KRT17 validation skeletons with provenance; it does not run heavy spatial analysis inside the MCP process.",
+  "version": "0.1.0",
+  "requires_env": [],
+  "optional_env": [],
+  "depends_on": ["bio-singlecell", "bio-scfm"],
+  "task_tags": ["spatial-transcriptomics", "rare-cell", "ipf", "foundation-models"],
+  "servers": [
+    {
+      "name": "bio-spatial",
+      "script": "packs/bio-spatial/spatial_server.py",
+      "env_pass": []
+    }
+  ],
+  "skills": [
+    {
+      "id": "spatial-analysis",
+      "src": "packs/bio-spatial/skills/spatial-analysis"
+    }
+  ]
+}

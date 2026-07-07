@@ -32,10 +32,16 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import dsml_shim
+import task_router
+import ultra_orchestrator
 
 # DSML 兜底 shim 的运行模式：off（默认，字节级透传）/ detect（透传 + 遥测）/ rewrite（改写）。
 # 由 __main__ 依 shim_mode(PROV_NAME, PROV) 覆写（读环境变量 CSSWITCH_TOOLUSE_SHIM）。
 SHIM_MODE = "off"
+# Ultra 子代理 / WellFallback 编排：默认关闭，CSSWITCH_ULTRA_MODE 非 off/normal 时启用。
+# v1 只完整接管非流式请求；流式请求保留原路径，避免 SSE 中途重试破坏协议。
+ULTRA_MODE = "off"
+ULTRA_LEDGER = None
 
 # ---------- provider 注册表 ----------
 PROVIDERS = {
@@ -610,6 +616,9 @@ class H(BaseHTTPRequestHandler):
                                "n_tools": len(areq.get("tools") or [])}, _f, ensure_ascii=False, indent=2)
             except Exception:
                 pass
+        if ultra_orchestrator.ultra_enabled(ULTRA_MODE):
+            if self._handle_ultra(areq):
+                return
         if PROV["mode"] == "anthropic":
             self._handle_anthropic(areq)
         else:
@@ -688,6 +697,18 @@ class H(BaseHTTPRequestHandler):
                     other.sendall(data)
                 except Exception:
                     return
+
+    # ---- Ultra：任务路由 + WellFallback + 子代理 guardrails（非流式 v1） ----
+    def _handle_ultra(self, areq):
+        active_ctx = task_router.current_context(
+            PROV_NAME, PROV, KEY, RELAY_FORCE_MODEL, RELAY_THINKING)
+        cfg = task_router.load_runtime_config()
+        result = ultra_orchestrator.handle_request(
+            areq, active_ctx, cfg, http_post, ULTRA_LEDGER, log, mode=ULTRA_MODE)
+        if result is None:
+            return False
+        self._send_json(result.status, result.body)
+        return True
 
     # ---- DeepSeek：Anthropic 原生透传（改模型名+换鉴权+夹 max_tokens+重试） ----
     def _handle_anthropic(self, areq):
@@ -886,6 +907,9 @@ if __name__ == "__main__":
     LOG = args.log
     KEY = load_key(PROV, args)
     AUTH_SECRET = os.environ.get("CSSWITCH_AUTH_TOKEN") or args.auth_token
+    ULTRA_MODE = os.environ.get("CSSWITCH_ULTRA_MODE", "off").strip() or "off"
+    ULTRA_LEDGER = os.environ.get("CSSWITCH_ULTRA_LEDGER") or os.path.join(
+        os.path.expanduser("~"), ".csswitch", "logs", "fallback-ledger.jsonl")
     # relay：按中转站 base_url 装配上游端点（base + /v1/messages、base + /v1/models）。
     if PROV_NAME == "relay":
         base = (os.environ.get("CSSWITCH_RELAY_BASE_URL") or args.relay_base or "").strip().rstrip("/")
@@ -910,7 +934,7 @@ if __name__ == "__main__":
     # DSML 兜底 shim 模式（默认 off；relay 恒 off；deepseek 且 dsml_capable 才读环境变量）。
     SHIM_MODE = dsml_shim.shim_mode(PROV_NAME, PROV)
     log(f"CSSwitch 代理启动 127.0.0.1:{args.port}  provider={PROV_NAME}  "
-        f"key=已加载(未显示)  上游={PROV['url']}  dsml_shim={SHIM_MODE}")
+        f"key=已加载(未显示)  上游={PROV['url']}  dsml_shim={SHIM_MODE}  ultra={ULTRA_MODE}")
     # 绑定重试：上次会话遗留的孤儿代理可能还占着端口（app 侧会主动清，但退干净需一点时间）。
     # 重试 ~3s 等端口释放，避免一次绑不上就直接失败（Errno 48）。
     srv = None

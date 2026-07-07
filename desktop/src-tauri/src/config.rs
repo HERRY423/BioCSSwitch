@@ -30,6 +30,9 @@ pub(crate) fn default_sandbox_port() -> u16 {
 pub(crate) fn default_mode() -> String {
     "proxy".to_string()
 }
+pub(crate) fn default_agent_mode() -> String {
+    "normal".to_string()
+}
 
 /// 当前配置 schema 版本。>2 的文件由更新版本 app 写入，本版本拒绝启动（不误改）。
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
@@ -104,6 +107,10 @@ pub struct Config {
     /// 敏感模式白名单 host（小写，精确匹配 upstream_host(...) 的返回值）。
     #[serde(default)]
     pub local_endpoint_hosts: Vec<String>,
+    /// 代理层 agent 编排模式："normal" | "ultra_conservative" | "ultra_deep"。
+    /// normal 保持旧路径；其它值由进程管家注入 CSSWITCH_ULTRA_MODE。
+    #[serde(default = "default_agent_mode")]
+    pub agent_mode: String,
     /// ── 任务级模型路由（feature 1）───────────────────────────────────────
     /// task 名（lit-review / clinical-trials-search / target-discovery / long-context-pdf /
     /// tool-heavy / omics-code 等）→ profile_id。空表示走 active_id。前端 UI 靠这个 map
@@ -139,6 +146,7 @@ impl Default for Config {
             pack_env: BTreeMap::new(),
             sensitive_mode: false,
             local_endpoint_hosts: Vec::new(),
+            agent_mode: default_agent_mode(),
             task_routes: BTreeMap::new(),
             probe_results: BTreeMap::new(),
             verification: BTreeMap::new(),
@@ -275,6 +283,7 @@ pub fn migrate_v1_to_v2(mut legacy: crate::config_legacy::ConfigV1) -> Config {
         pack_env: BTreeMap::new(),
         sensitive_mode: false,
         local_endpoint_hosts: Vec::new(),
+        agent_mode: default_agent_mode(),
         task_routes: BTreeMap::new(),
         probe_results: BTreeMap::new(),
         verification: BTreeMap::new(),

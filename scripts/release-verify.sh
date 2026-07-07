@@ -91,11 +91,15 @@ else
   echo "[release] not required in this run; pass --require-provider-matrix for release candidates"
 fi
 
+echo "== Frontend syntax gate =="
+need_cmd node
+node --check desktop/src/main.js
+
 echo "== Rust tests =="
 if command -v cargo >/dev/null 2>&1; then
   (cd desktop/src-tauri && cargo test)
 else
-  echo "[release] cargo is missing; Rust/Tauri build evidence is BLOCKED" >&2
+  echo "[release] cargo is missing; run this gate on a macOS build host or the GitHub Actions macos-package workflow" >&2
   exit 1
 fi
 
