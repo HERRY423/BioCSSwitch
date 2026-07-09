@@ -1,0 +1,28 @@
+{
+  "id": "bio-kg",
+  "name": "Biomedical causal knowledge graph",
+  "description": "Persistent local causal network for biomedical entities. Extracts causal triples from conversations and evidence, detects direction conflicts, finds multi-step paths, and turns missing validation into research hypotheses.",
+  "version": "0.1.0",
+  "dependencies": ["bio-audit", "bio-norm"],
+  "requires_tools": [
+    {"name": "python3", "kind": "runtime", "required": true, "purpose": "Run the local KG MCP server"}
+  ],
+  "requires_env": [],
+  "optional_env": [
+    {"name": "BIOCSSWITCH_KG_PATH", "label": "Local KG JSONL path"}
+  ],
+  "depends_on": ["bio-audit", "bio-norm"],
+  "servers": [
+    {
+      "name": "bio-kg",
+      "script": "packs/bio-kg/knowledge_graph_server.py",
+      "env_pass": ["BIOCSSWITCH_KG_PATH", "CSSWITCH_KG_PATH"]
+    }
+  ],
+  "skills": [
+    {
+      "id": "causal-knowledge-graph",
+      "src": "packs/bio-kg/skills/causal-knowledge-graph"
+    }
+  ]
+}

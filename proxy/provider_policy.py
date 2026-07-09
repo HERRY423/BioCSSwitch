@@ -3,10 +3,11 @@
 依赖方向：本模块是最底层，不 import csswitch_proxy / anthropic_compat（无循环依赖）。
 compat 三入口只吃 ProviderState，骨架从模块全局一次性组装后传入。
 """
-import random
 import re
+import secrets
 from dataclasses import dataclass
-from typing import Callable
+from types import MappingProxyType
+from typing import Callable, Mapping
 
 _DATE_SUFFIX = re.compile(r"-\d{8}$")
 
@@ -18,9 +19,9 @@ class Policy:
     passthrough: bool
     force_model_override: bool
     default_model: str
-    model_map: dict
-    models: list
-    model_caps: dict
+    model_map: Mapping
+    models: tuple
+    model_caps: Mapping
     default_cap: object          # int 或 None
 
 
@@ -30,20 +31,19 @@ def policy_from_prov(prov):
         passthrough=bool(prov.get("passthrough")),
         force_model_override=bool(prov.get("force_model_override")),
         default_model=prov.get("default_model"),
-        model_map=prov.get("model_map") or {},
-        models=prov.get("models") or [],
-        model_caps=prov.get("model_caps") or {},
+        model_map=MappingProxyType(dict(prov.get("model_map") or {})),
+        models=tuple(prov.get("models") or ()),
+        model_caps=MappingProxyType(dict(prov.get("model_caps") or {})),
         default_cap=prov.get("default_cap"),
     )
 
 
 def _default_nonce():
-    """默认 nonce 工厂：等价于旧 id(areq) 随机（rewrite tool_use id 本就随机，
-    golden 不录 rewrite body；测试注入固定工厂做精确断言）。"""
-    return format(random.getrandbits(24), "x")
+    """Return an unpredictable request nonce; tests inject a deterministic factory."""
+    return secrets.token_hex(3)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ProviderState:
     """compat 三入口只吃它，不读全局。骨架从模块全局一次性组装后传入。"""
     policy: Policy
@@ -130,8 +130,12 @@ def normalize_thinking(body, prov_name, relay_thinking=None):
 def clamp_max_tokens(v, model, state):
     if not v:
         return v
+    try:
+        value = int(v)
+    except (TypeError, ValueError):
+        return v
     caps = state.policy.model_caps or {}
     cap = caps.get(model, state.policy.default_cap)
     if cap:
-        return min(int(v), cap)
+        return min(value, cap)
     return v

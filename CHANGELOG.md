@@ -4,6 +4,16 @@
 
 > **约定**：已修问题从 [`docs/known-issues.md`](docs/known-issues.md)「毕业」到这里（发布即定稿）；未修/进行中留在 known-issues；硬 bug 的根因证据链存在 [`findings/`](findings/)。
 
+## [Unreleased] - single-cell runnable workflows
+
+### Changed
+- `bio-singlecell.sc_workflow_recipe` now returns an explicit `artifact_type=runnable_workflow` package with dry-run commands, output contracts, `README.md`, `workflow.manifest.json`, input validation, QC report generation, and provenance writing.
+- Snakemake/Nextflow generation now respects `annotation_method` and `include_scfm`; SingleR and CellTypist branches are generated selectively, and scFM rules are omitted when disabled.
+- Harmony and scVI workflow environments are split so generated workflows declare the tools they actually run.
+
+### Verification
+- Offline tests now compile generated Python workflow scripts and assert runnable package behavior.
+
 ## [0.3.7] - 2026-07-08
 
 > Biomedical infrastructure hardening: structured GRADE dossiers, real single-cell workflow recipes, and schema-backed pack dependencies.

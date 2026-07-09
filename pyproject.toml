@@ -16,8 +16,8 @@ dev = [
     "pytest>=8.0",
 ]
 
-[tool.setuptools]
-py-modules = []
+[tool.setuptools.packages.find]
+include = ["packs", "packs.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

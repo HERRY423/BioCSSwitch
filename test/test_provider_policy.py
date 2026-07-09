@@ -1,11 +1,14 @@
 import os
+import re
 import sys
 import unittest
+from dataclasses import FrozenInstanceError
 
 HERE = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(HERE, "..", "proxy"))
 import csswitch_proxy as cs          # 复用 PROVIDERS 作为配置真源
 import provider_policy as pp
+import provider_registry
 
 
 def _state(prov, prov_name, **over):
@@ -168,6 +171,9 @@ class ThinkingNormalization(unittest.TestCase):
 
 
 class PolicyFromProv(unittest.TestCase):
+    def test_proxy_exports_shared_registry(self):
+        self.assertIs(cs.PROVIDERS, provider_registry.PROVIDERS)
+
     def test_extracts_policy_fields_without_runtime_fields(self):
         pol = pp.policy_from_prov(cs.PROVIDERS["deepseek"])
         self.assertTrue(hasattr(pol, "passthrough"))
@@ -182,6 +188,32 @@ class PolicyFromProv(unittest.TestCase):
         self.assertTrue(pp.policy_from_prov(cs.PROVIDERS["openai-custom"]).force_model_override)
         self.assertTrue(pp.policy_from_prov(cs.PROVIDERS["relay"]).force_model_override)
         self.assertFalse(pp.policy_from_prov(cs.PROVIDERS["qwen"]).force_model_override)
+
+    def test_policy_is_an_immutable_snapshot(self):
+        source = {
+            "model_map": {"shell": "real"},
+            "models": [("shell", "Real")],
+            "model_caps": {"real": 42},
+            "default_model": "real",
+        }
+        policy = pp.policy_from_prov(source)
+        source["model_map"]["shell"] = "mutated"
+        source["models"].append(("other", "Other"))
+        source["model_caps"]["real"] = 99
+
+        self.assertEqual(policy.model_map["shell"], "real")
+        self.assertEqual(policy.models, (("shell", "Real"),))
+        self.assertEqual(policy.model_caps["real"], 42)
+        with self.assertRaises(TypeError):
+            policy.model_map["shell"] = "blocked"
+
+    def test_provider_state_is_frozen(self):
+        state = _state(cs.PROVIDERS["deepseek"], "deepseek")
+        with self.assertRaises(FrozenInstanceError):
+            state.shim_mode = "rewrite"
+
+    def test_default_nonce_uses_six_hex_digits(self):
+        self.assertRegex(pp._default_nonce(), re.compile(r"^[0-9a-f]{6}$"))
 
 
 if __name__ == "__main__":

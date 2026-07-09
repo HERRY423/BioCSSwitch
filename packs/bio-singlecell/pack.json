@@ -2,7 +2,7 @@
   "id": "bio-singlecell",
   "name": "单细胞数据处理与指纹",
   "description": "给 scRNA-seq / scFM 下游分析准备可复现输入层：AnnData 内容指纹、MAD-based QC、确定性 scanpy 预处理配方，以及 doublet 检测、batch 整合、基因 ID 转换、细胞类型注释、多模态与空间转录组预处理配方。不代跑分析——产出可复现脚本 + provenance，重活在用户机器上跑。",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "dependencies": [],
   "requires_tools": [
     {"name": "python3", "kind": "runtime", "required": true, "purpose": "Run local MCP server"},

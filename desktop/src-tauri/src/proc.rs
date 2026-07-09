@@ -3,7 +3,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -332,6 +332,44 @@ pub fn find_exe(name: &str) -> Option<PathBuf> {
     which(name).or_else(|| which_via_login_shell(name))
 }
 
+pub fn parse_python_version_info(text: &str) -> Option<(u32, u32)> {
+    let text = text.trim();
+    let inner = text.strip_prefix('(')?.strip_suffix(')')?;
+    let mut parts = inner.split(',').map(str::trim);
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    Some((major, minor))
+}
+
+pub fn check_python_version(python_exe: &Path) -> Result<(), String> {
+    let out = Command::new(python_exe)
+        .args(["-c", "import sys; print(sys.version_info[:2])"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("无法运行 python3（{}）：{e}", python_exe.display()))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!(
+            "无法读取 python3 版本（{}）：{}",
+            python_exe.display(),
+            if stderr.is_empty() {
+                "python3 --version probe failed".to_string()
+            } else {
+                stderr
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (major, minor) = parse_python_version_info(&stdout)
+        .ok_or_else(|| format!("无法解析 python3 版本输出：{}", stdout.trim()))?;
+    if (major, minor) < (3, 10) {
+        return Err(format!(
+            "python3 版本过低：当前 {major}.{minor}，需要 >= 3.10"
+        ));
+    }
+    Ok(())
+}
+
 fn is_exec(p: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     match std::fs::metadata(p) {
@@ -424,6 +462,14 @@ mod tests {
     #[test]
     fn find_exe_finds_sh() {
         assert!(find_exe("sh").is_some());
+    }
+
+    #[test]
+    fn parse_python_version_info_accepts_tuple_output() {
+        assert_eq!(parse_python_version_info("(3, 10)"), Some((3, 10)));
+        assert_eq!(parse_python_version_info(" (3, 13)\n"), Some((3, 13)));
+        assert_eq!(parse_python_version_info("Python 3.10.0"), None);
+        assert_eq!(parse_python_version_info("(3,)"), None);
     }
 
     #[test]

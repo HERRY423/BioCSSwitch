@@ -296,6 +296,10 @@ def test_release_versions():
     grade_text = (_ROOT / "packs" / "bio-audit" / "grade_server.py").read_text("utf-8")
     m = re.search(r'MCPServer\("bio-audit-grade",\s*"([^"]+)"\)', grade_text)
     check("bio-audit-grade version matches pack", bool(m) and m.group(1) == audit["version"])
+    singlecell = json.loads((_ROOT / "packs" / "bio-singlecell" / "pack.json").read_text("utf-8"))
+    sc_text = (_ROOT / "packs" / "bio-singlecell" / "singlecell_server.py").read_text("utf-8")
+    sc_m = re.search(r'MCPServer\("bio-singlecell",\s*"([^"]+)"\)', sc_text)
+    check("bio-singlecell server version matches pack", bool(sc_m) and sc_m.group(1) == singlecell["version"])
 
 
 def test_generators_golden():
@@ -653,18 +657,55 @@ def test_singlecell_recipe_expansion():
     check("spatial 配方含 squidpy spatial neighbors", "spatial_neighbors" in sp["script"])
     check("spatial 先生成 leiden 再 neighborhood enrichment", "sc.tl.leiden" in sp["script"] and 'cluster_key="leiden"' in sp["script"])
     wf = sc.sc_workflow_recipe(engine="snakemake", batch_method="scvi", annotation_method="celltypist")
+    check("workflow artifact is explicitly runnable",
+          wf["artifact_type"] == "runnable_workflow" and wf["runnable"] is True and wf["dry_run_command"])
     check("Snakemake workflow package includes Snakefile and conda envs",
           "Snakefile" in wf["files"] and "envs/scvi.yaml" in wf["files"])
     check("Snakemake workflow wires scanpy/scrublet/scVI/celltypist",
           all(x in wf["files"]["Snakefile"] for x in ("qc_scanpy", "doublet_scrublet", "batch_integrate", "annotate_celltypist")))
+    check("Snakemake workflow has validation/report/provenance steps",
+          all(x in wf["files"]["Snakefile"] for x in ("validate_input", "qc_report", "write_provenance.py"))
+          and {"scripts/validate_input.py", "scripts/qc_report.py", "scripts/write_provenance.py"} <= set(wf["files"]))
     check("workflow declares actual single-cell toolchain",
           {"scanpy", "scrublet", "scvi-tools", "celltypist"} <= {t["name"] for t in wf["toolchain"]})
+    wf_no_scfm = sc.sc_workflow_recipe(engine="snakemake", include_scfm=False, batch_method="harmony", annotation_method="singler")
+    check("Snakemake respects include_scfm=false",
+          "rule scfm_embedding" not in wf_no_scfm["files"]["Snakefile"]
+          and not wf_no_scfm["configuration_required"])
+    check("Snakemake can switch to SingleR and Harmony",
+          "rule annotate_singler" in wf_no_scfm["files"]["Snakefile"]
+          and "rule annotate_celltypist" not in wf_no_scfm["files"]["Snakefile"]
+          and "envs/harmony.yaml" in wf_no_scfm["files"])
+    for script_name in (
+        "scripts/validate_input.py",
+        "scripts/qc_scanpy.py",
+        "scripts/doublet_scrublet.py",
+        "scripts/integrate_scvi.py",
+        "scripts/integrate_harmony.py",
+        "scripts/annotate_celltypist.py",
+        "scripts/scfm_embed_adapter.py",
+        "scripts/qc_report.py",
+        "scripts/write_provenance.py",
+    ):
+        try:
+            compile(wf["files"][script_name], script_name, "exec")
+            ok = True
+        except SyntaxError:
+            ok = False
+        check(f"generated Python script compiles: {script_name}", ok)
     nf = sc.sc_workflow_recipe(engine="nextflow", batch_method="harmony", include_scfm=True)
     check("Nextflow workflow package includes main.nf",
           "main.nf" in nf["files"] and "process QC_SCANPY" in nf["files"]["main.nf"])
+    check("Nextflow workflow has publishable report/provenance/scFM steps",
+          all(x in nf["files"]["main.nf"] for x in ("publishDir params.outdir", "process QC_REPORT", "process WRITE_PROVENANCE", "process SCFM_EMBED")))
     check("Nextflow workflow exposes nf-core/scrnaseq handoff",
           nf["nf_core_fastq_handoff"]["pipeline"] == "nf-core/scrnaseq"
           and "nextflow run nf-core/scrnaseq" in nf["nf_core_fastq_handoff"]["command"])
+    nf_singler = sc.sc_workflow_recipe(engine="nextflow", annotation_method="singler", include_scfm=False)
+    check("Nextflow can switch to SingleR without scFM",
+          "process ANNOTATE_SINGLER" in nf_singler["files"]["main.nf"]
+          and "process ANNOTATE_CELLTYPIST" not in nf_singler["files"]["main.nf"]
+          and "process SCFM_EMBED" not in nf_singler["files"]["main.nf"])
 
 
 def test_sc_downstream_recipes():
@@ -945,6 +986,101 @@ def test_bio_ml_recipes():
           "SystemExit" in lab["script"] and len(lab["provenance_skeleton"]["iterations"]) == 2)
 
 
+def test_debate_experiment_kg():
+    """Offline coverage for debate arena, experimental design, and living KG."""
+    print("[debate + experiment + kg]")
+    sys.path.insert(0, str(_ROOT / "proxy"))
+
+    import debate_arena
+    import fallback_policy
+    import task_router
+
+    req = {
+        "model": "claude-sonnet-5",
+        "messages": [{
+            "role": "user",
+            "content": "Run a scientific debate: MYC upregulates CCND1 in hepatocellular carcinoma.",
+        }],
+    }
+    check("task router detects scientific debate", task_router.detect_task(req) == "scientific-debate")
+
+    def fake_call(role_req, ctx, role, round_index):
+        text = (
+            f"claim_summary: {role['id']} round {round_index}. "
+            "PMID:12345678 supports MYC upregulates CCND1 in HepG2 using ChIP-seq and RNAi. "
+            "evidence_grade: Moderate. uncertainty_0_to_1: 0.32. "
+            "decisive_next_experiment: powered CRISPRi rescue assay."
+        )
+        if role["id"] == "skeptic":
+            text += " Weak link: cell line boundary and missing blinded endpoint."
+        return (
+            200,
+            {"content": [{"type": "text", "text": text}]},
+            fallback_policy.Failure(fallback_policy.OK, 200, ""),
+            ctx.get("model") or "fake-model",
+        )
+
+    debate = debate_arena.run_debate(
+        req,
+        [{"profile_id": "p1", "provider": "fake", "model": "m1"}],
+        fake_call,
+        max_agents=3,
+        rounds=2,
+    )
+    check("debate produces structured turns", debate["structured_debate_record"]["successful_turns"] == 6)
+    check("debate returns evidence grade", debate["evidence_grade"]["grade"] in {"Low", "Moderate", "High"})
+    check("debate has experiment roadmap", bool(debate["experimental_roadmap"]))
+
+    exp = _load_server("bio-experiment/experiment_server.py")
+    plan = exp.agentic_experiment_plan(
+        research_question="Does MYC directly regulate CCND1 in HCC stem-like cells?",
+        hypothesis="MYC upregulates CCND1 and drives cell-cycle entry in HCC stem-like cells.",
+        disease_context="hepatocellular carcinoma",
+        model_system="HepG2 and HCC organoids",
+        intervention="CRISPRi MYC plus rescue",
+        primary_endpoint="CCND1 RNA/protein change and EdU-positive fraction",
+        assay_family="perturbation",
+        outcome_type="continuous",
+        effect_size=0.8,
+        prior_evidence="PMID:12345678 ChIP-seq + RNAi",
+        budget_usd=25000,
+    )
+    check("experiment plan is ELN importable", plan["execution_contract"]["eln_importable"] is True)
+    check("experiment plan includes power analysis", plan["sample_size"]["analysis"]["total_n_or_events"] is not None)
+    check("experiment plan includes preregistration", "osf" in plan["preregistration"])
+
+    kg = _load_server("bio-kg/knowledge_graph_server.py")
+    extracted = kg.kg_extract_triples(
+        text="PMID:12345678 shows MYC upregulates CCND1 in HepG2 using ChIP-seq and RNAi.",
+        context="hepatocellular carcinoma",
+        source="offline-test",
+    )
+    check("KG extracts MYC->CCND1", any(t["subject"]["name"] == "MYC" and t["object"]["name"] == "CCND1" for t in extracted["triples"]))
+    conflict_rows = extracted["triples"] + [{
+        "subject": {"name": "MYC"},
+        "relation": "causally_downregulates",
+        "object": {"name": "CCND1"},
+        "context": "hepatocellular carcinoma",
+        "evidence": ["PMID:87654321"],
+        "confidence": 0.82,
+    }]
+    conflict = kg.kg_conflict_scan(triples=conflict_rows)
+    check("KG detects opposite-direction conflict", conflict["conflict_count"] >= 1)
+    chain = kg.kg_causal_paths(
+        source="MYC",
+        target="CDK4",
+        triples=extracted["triples"] + [{
+            "subject": {"name": "CCND1"},
+            "relation": "causally_upregulates",
+            "object": {"name": "CDK4"},
+            "context": "hepatocellular carcinoma",
+            "evidence": ["PMID:22222222"],
+            "confidence": 0.7,
+        }],
+    )
+    check("KG finds multi-step causal path", chain["path_count"] >= 1)
+
+
 def test_privacy_partial_leak():
     """修复 3：隐私红队片段泄露检测 —— 后四位/前三后三/身份证生日段/MRN 片段都算泄露。"""
     print("[privacy partial leak]")
@@ -981,6 +1117,7 @@ def main() -> int:
     test_sc_atlas_and_scanpy_generator()
     test_spatial_recipes()
     test_bio_ml_recipes()
+    test_debate_experiment_kg()
     test_privacy_partial_leak()
     print()
     if _fails:

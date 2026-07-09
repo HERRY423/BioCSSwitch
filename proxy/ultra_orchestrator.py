@@ -11,30 +11,17 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 import urllib.error
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import fallback_policy
 import task_router
-
-
-DEEPSEEK_MODEL_MAP = {
-    "claude-opus-4-8": "deepseek-v4-pro",
-    "claude-sonnet-5": "deepseek-v4-flash",
-    "claude-sonnet-4-6": "deepseek-v4-flash",
-    "claude-haiku-4-5": "deepseek-v4-flash",
-}
-DEEPSEEK_CAPS = {"deepseek-v4-pro": 65536, "deepseek-v4-flash": 32768}
-QWEN_MODEL_MAP = {
-    "claude-opus-4-8": "qwen-max",
-    "claude-sonnet-5": "qwen-plus",
-    "claude-sonnet-4-6": "qwen-plus",
-    "claude-haiku-4-5": "qwen-turbo",
-}
-QWEN_CAPS = {"qwen-max": 8192, "qwen-plus": 8192, "qwen-turbo": 8192}
+import debate_arena
+import knowledge_ingest
+import anthropic_compat
+import provider_policy
+import provider_registry
 
 
 @dataclass
@@ -73,9 +60,9 @@ def _text_has_phi(text: str) -> bool:
     patterns = [
         r"\bMRN[:#\s]*\d{5,}\b",
         r"\b\d{3}-\d{2}-\d{4}\b",  # US SSN-like
-        r"\b(?:DOB|出生日期)[:#\s]*\d{1,4}[-/]\d{1,2}[-/]\d{1,4}\b",
-        r"\b身份证[:#\s]*[0-9Xx]{15,18}\b",
-        r"\b住院号[:#\s]*\d{5,}\b",
+        r"(?:DOB|出生日期)[:：#\s]*\d{1,4}[-/]\d{1,2}[-/]\d{1,4}\b",
+        r"(?:身份证|身份证号)[:：#\s]*[0-9Xx]{15,18}\b",
+        r"(?:住院号|病案号)[:：#\s]*\d{5,}\b",
     ]
     return any(re.search(p, text, re.I) for p in patterns)
 
@@ -101,59 +88,6 @@ def run_subagents(req: Dict[str, Any], resp: Dict[str, Any], task_id: str,
     model calls under the same JSON contract.
     """
     return _run_subagents_v2(req, resp, task_id, mode)
-
-    text = fallback_policy.response_text(resp)
-    tool_results = _tool_result_text(req)
-    findings: List[Dict[str, Any]] = []
-
-    # verifier: citation IDs must be grounded in tool_result text when present.
-    cited_ids = set(re.findall(r"\b(?:PMID[:\s]*|NCT)(\d{8}|\d{8})\b", text, re.I))
-    if task_id in ("evidence-check", "lit-review", "clinical-trials", "target-discovery"):
-        for cid in cited_ids:
-            if cid and cid not in tool_results:
-                findings.append({
-                    "agent_id": "verifier",
-                    "severity": "high",
-                    "issue": "ungrounded_citation_id",
-                    "recommendation": "Use only IDs found in tool results or remove the citation.",
-                })
-
-    # critic: flag common biomedical over-extrapolation language.
-    low = text.lower()
-    if any(x in low for x in ("mouse", "mice", "murine", "in vitro", "cell line")) and any(
-        x in low for x in ("clinically effective", "treats patients", "human efficacy", "可用于临床", "临床有效")
-    ):
-        findings.append({
-            "agent_id": "critic",
-            "severity": "medium",
-            "issue": "possible_extrapolation",
-            "recommendation": "Separate preclinical support from clinical efficacy claims.",
-        })
-
-    # toolsmith: forced tool call that came back as prose.
-    if fallback_policy.request_forces_tool(req) and not fallback_policy.response_has_tool_use(resp):
-        findings.append({
-            "agent_id": "toolsmith",
-            "severity": "high",
-            "issue": "tool_use_missing",
-            "recommendation": "Retry with a tool-stable profile or DSML repair.",
-        })
-
-    # coder: omics/code tasks should contain a runnable skeleton.
-    if task_id == "omics-code" and "```" not in text and "python" not in low and "rscript" not in low:
-        findings.append({
-            "agent_id": "coder",
-            "severity": "low",
-            "issue": "no_code_skeleton",
-            "recommendation": "Add a reproducible script or command skeleton.",
-        })
-
-    plan = []
-    if task_id in ("lit-review", "target-discovery", "clinical-trials"):
-        plan = ["classify question", "retrieve evidence", "audit citations", "state uncertainty"]
-
-    verdict = "fail" if any(f["severity"] == "high" for f in findings) else ("warn" if findings else "pass")
-    return {"verdict": verdict, "findings": findings, "planner": {"steps": plan}}
 
 
 def _run_subagents_v2(req: Dict[str, Any], resp: Dict[str, Any], task_id: str,
@@ -266,12 +200,9 @@ def _critic_findings(text: str, task_id: str, mode: str) -> List[Dict[str, Any]]
 
 def _load_critique_modules() -> Optional[Dict[str, Any]]:
     try:
-        packs_dir = Path(__file__).resolve().parents[1] / "packs"
-        if str(packs_dir) not in sys.path:
-            sys.path.insert(0, str(packs_dir))
-        from _lib.counter_experiment import design_counter_experiment  # type: ignore
-        from _lib.critique_scoring import score_believability  # type: ignore
-        from _lib.extrapolation_checker import (  # type: ignore
+        from packs._lib.counter_experiment import design_counter_experiment
+        from packs._lib.critique_scoring import score_believability
+        from packs._lib.extrapolation_checker import (
             check_extrapolations,
             concern_level,
             detect_methodology_flags,
@@ -422,8 +353,48 @@ def handle_request(req: Dict[str, Any], active_ctx: Dict[str, Any], config: Dict
         ledger.write(_ledger_entry(task_id, attempts, final_failure.kind, route_events, mode, policy))
         return UltraResult(True, 400, fallback_policy.error_body(final_failure), task_id, attempts, {"events": route_events})
 
+    if debate_arena.should_run_debate(req, task_id, mode, config):
+        ultra_cfg = config.get("ultra") if isinstance(config.get("ultra"), dict) else {}
+        debate_cfg = ultra_cfg.get("debate") if isinstance(ultra_cfg.get("debate"), dict) else {}
+
+        def _debate_call(role_req: Dict[str, Any], ctx: Dict[str, Any],
+                         _role: Dict[str, Any], _round_index: int):
+            pre = preflight_guard(role_req, ctx, config)
+            model = resolve_model(role_req.get("model"), ctx)
+            if pre.kind != fallback_policy.OK:
+                return 400, fallback_policy.error_body(pre), pre, model
+            return call_once(role_req, ctx, http_post)
+
+        debate = debate_arena.run_debate(
+            req,
+            contexts,
+            _debate_call,
+            task_id=task_id,
+            max_agents=debate_cfg.get("max_agents", 4),
+            rounds=debate_cfg.get("rounds", 2),
+        )
+        route_events.append({
+            "kind": "scientific_debate",
+            "rounds": debate.get("structured_debate_record", {}).get("rounds", 0),
+            "successful_turns": debate.get("structured_debate_record", {}).get("successful_turns", 0),
+            "evidence_grade": (debate.get("evidence_grade") or {}).get("grade", ""),
+        })
+        body_obj = debate_arena.debate_body(req.get("model") or "bio-debate-arena", debate)
+        kg_event = _maybe_ingest_kg(req, body_obj, task_id, config, "debate_arena")
+        if kg_event:
+            route_events.append(kg_event)
+        if debate.get("structured_debate_record", {}).get("successful_turns", 0) <= 0:
+            final_failure = fallback_policy.Failure(
+                fallback_policy.QUALITY_GATE_FAIL,
+                502,
+                "scientific debate produced no successful turns",
+            )
+            ledger.write(_ledger_entry(task_id, attempts, final_failure.kind, route_events, mode, policy))
+            return UltraResult(True, 502, fallback_policy.error_body(final_failure), task_id, attempts, {"events": route_events})
+        ledger.write(_ledger_entry(task_id, attempts, "debate_pass", route_events, mode, policy))
+        return UltraResult(True, 200, body_obj, task_id, attempts, {"events": route_events})
+
     idx = 0
-    seen_context_keys = {_context_key(c) for c in contexts}
     while idx < len(contexts) and len(attempts) < policy.max_attempts:
         ctx = contexts[idx]
         pre = preflight_guard(req, ctx, config)
@@ -441,8 +412,16 @@ def handle_request(req: Dict[str, Any], active_ctx: Dict[str, Any], config: Dict
         final_failure = failure
 
         if failure.kind == fallback_policy.OK:
-            if len(attempts) > 1:
-                ledger.write(_ledger_entry(task_id, attempts, "pass", route_events, mode, policy))
+            kg_event = _maybe_ingest_kg(
+                req,
+                body_obj,
+                task_id,
+                config,
+                f"ultra:{ctx.get('profile_id') or ctx.get('profile_name') or 'active'}",
+            )
+            if kg_event:
+                route_events.append(kg_event)
+            ledger.write(_ledger_entry(task_id, attempts, "pass", route_events, mode, policy))
             log_fn(f"  <- ultra OK task={task_id} attempts={len(attempts)} final={ctx.get('profile_name')}")
             return UltraResult(True, 200, body_obj, task_id, attempts, {"events": route_events})
 
@@ -452,32 +431,65 @@ def handle_request(req: Dict[str, Any], active_ctx: Dict[str, Any], config: Dict
 
         next_plan = task_router.route_plan(config, task_id, active_ctx, failure_kind=failure.kind)
         route_events.append(_ledger_route_plan(next_plan))
-        added = 0
-        for new_ctx in next_plan.get("contexts") or []:
+        next_contexts, next_sensitive_skips = _filter_sensitive_contexts(
+            req, list(next_plan.get("contexts") or []), config)
+        if next_sensitive_skips:
+            route_events.append({"kind": "sensitive_filter", "skipped": next_sensitive_skips})
+
+        attempted_keys = {_context_key(c) for c in contexts[:idx + 1]}
+        reordered: List[Dict[str, Any]] = []
+        queued_keys = set()
+        for new_ctx in next_contexts + contexts[idx + 1:]:
             key = _context_key(new_ctx)
-            if key not in seen_context_keys:
-                contexts.append(new_ctx)
-                seen_context_keys.add(key)
-                added += 1
-        if added == 0 and idx + 1 >= len(contexts):
+            if key not in attempted_keys and key not in queued_keys:
+                reordered.append(new_ctx)
+                queued_keys.add(key)
+        contexts = contexts[:idx + 1] + reordered
+        if not reordered:
             break
         log_fn(f"  ~ ultra fallback task={task_id} failure={failure.kind} next_attempt={idx + 2}")
         idx += 1
 
     ledger.write(_ledger_entry(task_id, attempts, final_failure.kind, route_events, mode, policy))
-    return UltraResult(True, final_failure.status or 502, fallback_policy.error_body(final_failure), task_id, attempts, {"events": route_events})
+    return UltraResult(
+        True,
+        _failure_http_status(final_failure),
+        fallback_policy.error_body(final_failure),
+        task_id,
+        attempts,
+        {"events": route_events},
+    )
 
 
 def call_once(req: Dict[str, Any], ctx: Dict[str, Any],
               http_post: Callable[..., Tuple[bytes, str]]) -> Tuple[int, Dict[str, Any], fallback_policy.Failure, str]:
-    target_model = resolve_model(req.get("model"), ctx)
+    upstream, compat_ctx = anthropic_compat.transform_request(req, _provider_state(ctx))
+    target_model = compat_ctx.target_model
     try:
-        if ctx.get("mode") == "openai" or ctx.get("provider") == "qwen":
-            payload = anthropic_to_openai(req, ctx, target_model)
+        if ctx.get("provider") == "openai-responses":
+            omit_tools = {"web_search"} if "dashscope.aliyuncs.com" in (ctx.get("url") or "") else set()
+            payload = anthropic_compat.anthropic_to_openai_responses(
+                upstream,
+                target_model,
+                max_output_tokens=upstream.get("max_tokens"),
+                omit_tool_names=omit_tools,
+            )
+            raw, _ct = http_post(ctx["url"], json.dumps(payload).encode(), auth_headers(ctx))
+            body = anthropic_compat.openai_responses_to_anthropic(
+                json.loads(raw),
+                req.get("model") or target_model,
+                default_id="msg_ultra_proxy",
+            )
+        elif ctx.get("mode") == "openai" or ctx.get("provider") == "qwen":
+            payload = anthropic_compat.anthropic_to_openai(
+                upstream,
+                target_model,
+                upstream.get("max_tokens"),
+            )
             raw, _ct = http_post(ctx["url"], json.dumps(payload).encode(), auth_headers(ctx))
             body = openai_to_anthropic(json.loads(raw), req.get("model") or target_model)
         else:
-            payload = anthropic_payload(req, ctx, target_model)
+            payload = upstream
             raw, _ct = http_post(ctx["url"], json.dumps(payload).encode(), auth_headers(ctx))
             body = json.loads(raw)
         return 200, body, fallback_policy.Failure(fallback_policy.OK, 200, ""), target_model
@@ -494,115 +506,36 @@ def call_once(req: Dict[str, Any], ctx: Dict[str, Any],
         return 0, fallback_policy.error_body(f), f, target_model
 
 
+def _failure_http_status(failure: fallback_policy.Failure) -> int:
+    status = int(failure.status or 0)
+    if 400 <= status <= 599:
+        return status
+    return 502
+
+
 def resolve_model(name: Optional[str], ctx: Dict[str, Any]) -> str:
-    provider = ctx.get("provider")
-    forced = ctx.get("model") or ""
-    if provider == "relay":
-        return forced or name or "claude-opus-4-8"
-    if provider == "qwen":
-        return QWEN_MODEL_MAP.get(name or "", "qwen-plus")
-    return DEEPSEEK_MODEL_MAP.get(name or "", "deepseek-v4-flash")
+    return provider_policy.resolve_model(name, _provider_state(ctx))
 
 
-def anthropic_payload(req: Dict[str, Any], ctx: Dict[str, Any], target_model: str) -> Dict[str, Any]:
-    body = dict(req)
-    body["model"] = target_model
-    if body.get("max_tokens"):
-        body["max_tokens"] = clamp_max_tokens(body["max_tokens"], ctx, target_model)
-    normalize_thinking(body, ctx)
-    return body
-
-
-def anthropic_to_openai(req: Dict[str, Any], ctx: Dict[str, Any], target_model: str) -> Dict[str, Any]:
-    msgs = []
-    sys_prompt = req.get("system")
-    if isinstance(sys_prompt, list):
-        sys_prompt = "\n".join(b.get("text", "") for b in sys_prompt if isinstance(b, dict))
-    if sys_prompt:
-        msgs.append({"role": "system", "content": sys_prompt})
-    for m in req.get("messages", []):
-        role = m.get("role")
-        content = m.get("content")
-        if isinstance(content, str):
-            msgs.append({"role": role, "content": content})
-            continue
-        text_parts, tool_calls, tool_results = [], [], []
-        for blk in content or []:
-            t = blk.get("type")
-            if t == "text":
-                text_parts.append(blk.get("text", ""))
-            elif t == "tool_use":
-                tool_calls.append({
-                    "id": blk.get("id"), "type": "function",
-                    "function": {"name": blk.get("name"),
-                                 "arguments": json.dumps(blk.get("input", {}), ensure_ascii=False)},
-                })
-            elif t == "tool_result":
-                c = blk.get("content")
-                if isinstance(c, list):
-                    c = "".join(x.get("text", "") for x in c if isinstance(x, dict))
-                tool_results.append({"role": "tool", "tool_call_id": blk.get("tool_use_id"),
-                                     "content": c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)})
-        if role == "assistant" and tool_calls:
-            msgs.append({"role": "assistant", "content": "".join(text_parts) or None, "tool_calls": tool_calls})
-        elif tool_results:
-            msgs.extend(tool_results)
-            if text_parts:
-                msgs.append({"role": role, "content": "".join(text_parts)})
-        else:
-            msgs.append({"role": role, "content": "".join(text_parts)})
-
-    out = {"model": target_model, "messages": msgs, "stream": False}
-    if req.get("max_tokens"):
-        out["max_tokens"] = clamp_max_tokens(req["max_tokens"], ctx, target_model)
-    if req.get("temperature") is not None:
-        out["temperature"] = req["temperature"]
-    if req.get("tools"):
-        out["tools"] = [{"type": "function",
-                         "function": {"name": t["name"], "description": t.get("description", ""),
-                                      "parameters": t.get("input_schema", {})}}
-                        for t in req["tools"] if t.get("name")]
-    tc = req.get("tool_choice")
-    if isinstance(tc, dict):
-        mapped = _map_tool_choice(tc, req.get("tools"))
-        if mapped is not None:
-            out["tool_choice"] = mapped
-    if req.get("stop_sequences"):
-        out["stop"] = req["stop_sequences"]
-    if req.get("top_p") is not None:
-        out["top_p"] = req["top_p"]
-    return out
+def _provider_state(ctx: Dict[str, Any]) -> provider_policy.ProviderState:
+    provider = str(ctx.get("provider") or "deepseek")
+    definition = provider_registry.PROVIDERS.get(provider)
+    if definition is None:
+        fallback_name = "openai-custom" if ctx.get("mode") == "openai" else "relay"
+        definition = provider_registry.PROVIDERS[fallback_name]
+    return provider_policy.ProviderState(
+        policy=provider_policy.policy_from_prov(definition),
+        prov_name=provider,
+        relay_force_model=ctx.get("model") or None,
+        relay_models=(),
+        relay_thinking=ctx.get("thinking_policy") or None,
+        shim_mode="off",
+    )
 
 
 def openai_to_anthropic(resp: Dict[str, Any], model_id: str) -> Dict[str, Any]:
-    choice = (resp.get("choices") or [{}])[0]
-    msg = choice.get("message", {})
-    blocks = []
-    if msg.get("content"):
-        blocks.append({"type": "text", "text": msg["content"]})
-    for tc in msg.get("tool_calls") or []:
-        fn = tc.get("function", {})
-        try:
-            args = json.loads(fn.get("arguments") or "{}")
-        except Exception:
-            args = {}
-        blocks.append({"type": "tool_use", "id": tc.get("id"), "name": fn.get("name"), "input": args})
-    stop = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}.get(
-        choice.get("finish_reason"), "end_turn")
-    usage = resp.get("usage", {})
-    return {
-        "id": resp.get("id", "msg_ultra_proxy"),
-        "type": "message",
-        "role": "assistant",
-        "model": model_id,
-        "content": blocks or [{"type": "text", "text": ""}],
-        "stop_reason": stop,
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
-    }
+    return anthropic_compat.openai_to_anthropic(
+        resp, model_id, default_id="msg_ultra_proxy")
 
 
 def auth_headers(ctx: Dict[str, Any]) -> Dict[str, str]:
@@ -618,52 +551,8 @@ def auth_headers(ctx: Dict[str, Any]) -> Dict[str, str]:
     return headers
 
 
-def normalize_thinking(body: Dict[str, Any], ctx: Dict[str, Any]) -> None:
-    tc = body.get("tool_choice")
-    forcing = isinstance(tc, dict) and tc.get("type") in ("any", "tool")
-    if ctx.get("provider") == "deepseek" and forcing:
-        body["thinking"] = {"type": "disabled"}
-        return
-    if ctx.get("provider") == "relay" and ctx.get("thinking_policy") == "enabled":
-        th = body.get("thinking")
-        if not (isinstance(th, dict) and th.get("type") == "enabled"):
-            max_tokens = body.get("max_tokens")
-            budget = max(1, min(1024, int(max_tokens) - 1)) if isinstance(max_tokens, int) else 1024
-            body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-        return
-    th = body.get("thinking")
-    if isinstance(th, dict) and th.get("type") == "auto":
-        th = dict(th)
-        th["type"] = "adaptive"
-        body["thinking"] = th
-
-
 def clamp_max_tokens(v: Any, ctx: Dict[str, Any], model: str) -> Any:
-    try:
-        value = int(v)
-    except Exception:
-        return v
-    if ctx.get("provider") == "qwen":
-        return min(value, QWEN_CAPS.get(model, 8192))
-    if ctx.get("provider") == "deepseek":
-        return min(value, DEEPSEEK_CAPS.get(model, 8192))
-    return value
-
-
-def _map_tool_choice(tc: Dict[str, Any], tools: Any) -> Any:
-    t = tc.get("type")
-    if t == "auto":
-        return "auto"
-    if t == "none":
-        return "none"
-    if t == "tool" and tc.get("name"):
-        return {"type": "function", "function": {"name": tc["name"]}}
-    if t == "any":
-        names = [x["name"] for x in (tools or []) if isinstance(x, dict) and x.get("name")]
-        if len(names) == 1:
-            return {"type": "function", "function": {"name": names[0]}}
-        return "required"
-    return None
+    return provider_policy.clamp_max_tokens(v, model, _provider_state(ctx))
 
 
 def _tool_result_text(req: Dict[str, Any]) -> str:
@@ -744,6 +633,18 @@ def _policy_for_ledger(policy: fallback_policy.Policy) -> Dict[str, Any]:
         "stop_on": sorted(policy.stop_on),
         "failure_routes": policy.failure_routes,
     }
+
+
+def _maybe_ingest_kg(req: Dict[str, Any], resp: Dict[str, Any], task_id: str,
+                     config: Dict[str, Any], source: str) -> Optional[Dict[str, Any]]:
+    try:
+        if request_has_phi(req):
+            if knowledge_ingest.auto_ingest_enabled(config):
+                return {"kind": "knowledge_graph_ingest", "skipped": "phi_detected"}
+            return None
+        return knowledge_ingest.ingest_exchange(req, resp, task_id, source, config)
+    except Exception as e:  # noqa: BLE001
+        return {"kind": "knowledge_graph_ingest", "error": str(e)[:200]}
 
 
 def _ledger_entry(task_id: str, attempts: List[Attempt], final: str,

@@ -14,6 +14,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 TASK_RULES = {
+    "scientific-debate": [
+        "scientific debate", "debate arena", "multi-agent debate", "adversarial review",
+        "argue both sides", "opposing agents", "structured debate", "uncertainty quantification",
+        "科学辩论", "多智能体辩论", "对抗性论证", "正反方", "不确定性量化",
+    ],
     "lit-review": [
         "literature review", "systematic review", "pubmed", "meta-analysis",
         "文献综述", "系统综述", "荟萃", "meta 分析",
@@ -50,6 +55,7 @@ TASK_RULES = {
 }
 
 TASK_PROBES = {
+    "scientific-debate": ["json_stable", "long_ctx"],
     "clinical-trials": ["tool_use"],
     "target-discovery": ["tool_use"],
     "tool-heavy": ["tool_use"],
@@ -57,6 +63,33 @@ TASK_PROBES = {
     "long-context-pdf": ["long_ctx"],
     "lit-review": ["long_ctx"],
 }
+
+
+def normalize_openai_base(base: str) -> str:
+    root = str(base or "").strip().rstrip("/")
+    for suffix in (
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/v1/responses",
+        "/responses",
+        "/v1/models",
+        "/models",
+    ):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+    return root
+
+
+def _ends_with_version_segment(base: str) -> bool:
+    return bool(re.search(r"/v\d+(?:\.\d+)?$", base))
+
+
+def openai_endpoint(base: str, suffix: str) -> str:
+    root = normalize_openai_base(base)
+    if not _ends_with_version_segment(root):
+        root = root + "/v1"
+    return root + suffix
+
 
 TEMPLATE_RUNTIME = {
     "deepseek": {
@@ -79,6 +112,18 @@ TEMPLATE_RUNTIME = {
     "kimi": {"adapter": "relay", "thinking_policy": "enabled"},
     "minimax": {"adapter": "relay", "thinking_policy": "adaptive"},
     "openrouter": {"adapter": "relay", "thinking_policy": "adaptive"},
+    "custom-openai": {
+        "adapter": "openai-custom",
+        "mode": "openai",
+        "key_env": "CSSWITCH_OPENAI_KEY",
+        "thinking_policy": "",
+    },
+    "custom-openai-responses": {
+        "adapter": "openai-responses",
+        "mode": "openai",
+        "key_env": "CSSWITCH_OPENAI_KEY",
+        "thinking_policy": "",
+    },
     "custom": {"adapter": "relay", "thinking_policy": "adaptive"},
 }
 
@@ -169,6 +214,14 @@ def context_from_profile(profile: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ctx["url"] = base + "/v1/messages"
         ctx["models_url"] = base + "/v1/models"
         ctx["auth_style"] = "both"
+    elif adapter in {"openai-custom", "openai-responses"}:
+        base = normalize_openai_base(ctx["base_url"])
+        if not re.match(r"^https?://", base):
+            return None
+        suffix = "/responses" if adapter == "openai-responses" else "/chat/completions"
+        ctx["url"] = openai_endpoint(base, suffix)
+        ctx["models_url"] = openai_endpoint(base, "/models")
+        ctx["auth_style"] = "bearer"
     else:
         ctx["url"] = rt["url"]
         ctx["auth_style"] = "bearer" if adapter == "qwen" else "x-api-key"

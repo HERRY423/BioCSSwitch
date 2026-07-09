@@ -1,15 +1,92 @@
 import os
 import sys
 import json
+import argparse
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxy"))
 import csswitch_proxy as cs
 
 
+def context(provider, key="test-key", **overrides):
+    prov = dict(cs.PROVIDERS[provider])
+    prov.update(overrides.pop("prov", {}))
+    return cs.RequestContext(provider, prov, key, **overrides)
+
+
+class BuildContext(unittest.TestCase):
+    def test_build_context_relay_from_environment(self):
+        args = argparse.Namespace(
+            provider="relay",
+            env_file=None,
+            auth_token="arg-token",
+            relay_base=None,
+            openai_base=None,
+        )
+        env = {
+            "CSSWITCH_RELAY_KEY": "relay-key",
+            "CSSWITCH_RELAY_BASE_URL": "https://relay.example/root/",
+            "CSSWITCH_RELAY_MODEL": "kimi-k2.5",
+            "CSSWITCH_RELAY_THINKING": "enabled",
+            "CSSWITCH_AUTH_TOKEN": "env-token",
+            "CSSWITCH_ULTRA_MODE": "auto",
+            "HOME": os.path.expanduser("~"),
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            ctx = cs.build_context(args)
+        self.assertEqual(ctx.prov_name, "relay")
+        self.assertEqual(ctx.key, "relay-key")
+        self.assertEqual(ctx.prov["url"], "https://relay.example/root/v1/messages")
+        self.assertEqual(ctx.prov["models_url"], "https://relay.example/root/v1/models")
+        self.assertEqual(ctx.relay_force_model, "kimi-k2.5")
+        self.assertEqual(ctx.relay_thinking, "enabled")
+        self.assertEqual(ctx.auth_secret, "env-token")
+        self.assertEqual(ctx.ultra_mode, "auto")
+
+    def test_build_context_openai_custom_normalizes_base_and_model(self):
+        args = argparse.Namespace(
+            provider="openai-custom",
+            env_file=None,
+            auth_token=None,
+            relay_base=None,
+            openai_base="https://openai.example/v1/chat/completions",
+        )
+        env = {
+            "CSSWITCH_OPENAI_KEY": "openai-key",
+            "CSSWITCH_OPENAI_MODEL": "gpt-bio",
+            "HOME": os.path.expanduser("~"),
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            ctx = cs.build_context(args)
+        self.assertEqual(ctx.prov_name, "openai-custom")
+        self.assertEqual(ctx.key, "openai-key")
+        self.assertEqual(ctx.prov["url"], "https://openai.example/v1/chat/completions")
+        self.assertEqual(ctx.prov["models_url"], "https://openai.example/v1/models")
+        self.assertEqual(ctx.prov["default_model"], "gpt-bio")
+        self.assertEqual(ctx.relay_force_model, "gpt-bio")
+
+
+class HttpRetryBoundary(unittest.TestCase):
+    @mock.patch.object(cs.time, "sleep")
+    @mock.patch.object(cs.urllib.request, "urlopen")
+    def test_retries_transport_errors(self, urlopen, _sleep):
+        urlopen.side_effect = ConnectionError("reset")
+        with self.assertRaises(ConnectionError):
+            cs.http_post("https://example.invalid", b"{}", {}, attempts=3)
+        self.assertEqual(urlopen.call_count, 3)
+
+    @mock.patch.object(cs.urllib.request, "urlopen")
+    def test_does_not_retry_programming_errors(self, urlopen):
+        urlopen.side_effect = ValueError("bad request construction")
+        with self.assertRaises(ValueError):
+            cs.http_post("https://example.invalid", b"{}", {}, attempts=4)
+        self.assertEqual(urlopen.call_count, 1)
+
+
 class ToolChoiceMapping(unittest.TestCase):
     def setUp(self):
-        cs.PROV = cs.PROVIDERS["qwen"]
+        self.ctx = context("qwen")
 
     def test_tool_named_maps_to_function(self):
         out = cs.map_tool_choice({"type": "tool", "name": "grade"}, [{"name": "grade"}])
@@ -39,7 +116,7 @@ class ToolChoiceMapping(unittest.TestCase):
             "stop_sequences": ["STOP"],
             "top_p": 0.5,
         }
-        out = cs.anthropic_to_openai(req)
+        out = cs.anthropic_to_openai(req, self.ctx)
         self.assertEqual(out["tool_choice"], {"type": "function", "function": {"name": "grade"}})
         self.assertEqual(out["stop"], ["STOP"])
         self.assertEqual(out["top_p"], 0.5)
@@ -47,14 +124,12 @@ class ToolChoiceMapping(unittest.TestCase):
 
 class ResponsesMapping(unittest.TestCase):
     def setUp(self):
-        cs.PROV = dict(cs.PROVIDERS["openai-responses"])
-        cs.PROV_NAME = "openai-responses"
-        cs.PROV["default_model"] = "gpt-5.2"
-        cs.KEY = "sk-openai"
-        cs.RELAY_FORCE_MODEL = "gpt-5.2"
-
-    def tearDown(self):
-        cs.RELAY_FORCE_MODEL = None
+        self.ctx = context(
+            "openai-responses",
+            key="sk-openai",
+            relay_force_model="gpt-5.2",
+            prov={"default_model": "gpt-5.2"},
+        )
 
     def test_responses_request_maps_prompt_tools_and_limits(self):
         req = {
@@ -67,7 +142,7 @@ class ResponsesMapping(unittest.TestCase):
             "tools": [{"name": "lookup", "description": "search", "input_schema": {"type": "object"}}],
             "tool_choice": {"type": "tool", "name": "lookup"},
         }
-        out = cs.anthropic_to_openai_responses(req)
+        out = cs.anthropic_to_openai_responses(req, self.ctx)
         self.assertEqual(out["model"], "gpt-5.2")
         self.assertEqual(out["instructions"], "be brief")
         self.assertEqual(out["input"], [{"role": "user", "content": "hi"}])
@@ -84,27 +159,27 @@ class ResponsesMapping(unittest.TestCase):
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
             "tool_choice": "required",
-        })
+        }, self.ctx)
         self.assertEqual(out["tool_choice"], "auto")
 
     def test_dashscope_responses_tool_requests_use_conservative_cap(self):
-        old_url = cs.PROV.get("url")
-        cs.PROV["url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+        old_url = self.ctx.prov.get("url")
+        self.ctx.prov["url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
         try:
             out = cs.anthropic_to_openai_responses({
                 "model": "claude-opus-4-8",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 999999,
                 "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
-            })
+            }, self.ctx)
         finally:
-            cs.PROV["url"] = old_url
+            self.ctx.prov["url"] = old_url
         self.assertEqual(out["max_output_tokens"], 8192)
         self.assertEqual(out["tool_choice"], "auto")
 
     def test_dashscope_responses_drops_incompatible_web_search_tool(self):
-        old_url = cs.PROV.get("url")
-        cs.PROV["url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+        old_url = self.ctx.prov.get("url")
+        self.ctx.prov["url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
         try:
             out = cs.anthropic_to_openai_responses({
                 "model": "claude-opus-4-8",
@@ -113,9 +188,9 @@ class ResponsesMapping(unittest.TestCase):
                     {"name": "web_search", "input_schema": {"type": "object"}},
                     {"name": "lookup", "input_schema": {"properties": {"q": {"type": "string"}}}},
                 ],
-            })
+            }, self.ctx)
         finally:
-            cs.PROV["url"] = old_url
+            self.ctx.prov["url"] = old_url
         self.assertEqual([t["name"] for t in out["tools"]], ["lookup"])
         self.assertEqual(out["tools"][0]["parameters"]["type"], "object")
 
@@ -124,7 +199,7 @@ class ResponsesMapping(unittest.TestCase):
             "model": "claude-opus-4-8",
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"name": "web_search", "input_schema": {"type": "object"}}],
-        })
+        }, self.ctx)
         self.assertEqual(out["tools"][0]["name"], "web_search")
 
     def test_responses_tool_choice_none_passthrough(self):
@@ -132,7 +207,7 @@ class ResponsesMapping(unittest.TestCase):
             "model": "claude-opus-4-8",
             "messages": [{"role": "user", "content": "hi"}],
             "tool_choice": {"type": "none"},
-        })
+        }, self.ctx)
         self.assertEqual(out["tool_choice"], "none")
 
     def test_responses_request_maps_tool_results(self):
@@ -148,7 +223,7 @@ class ResponsesMapping(unittest.TestCase):
                 ]},
             ],
         }
-        out = cs.anthropic_to_openai_responses(req)
+        out = cs.anthropic_to_openai_responses(req, self.ctx)
         self.assertEqual(out["input"][0], {"role": "assistant", "content": "checking"})
         self.assertEqual(out["input"][1]["type"], "function_call")
         self.assertEqual(out["input"][1]["call_id"], "call_1")
@@ -176,24 +251,24 @@ class RelayProvider(unittest.TestCase):
     """中转站 provider：透传（不重映射）+ 贴合 + 双鉴权头 + 不夹 max_tokens + /v1/models 归一化。"""
 
     def setUp(self):
-        cs.PROV = dict(cs.PROVIDERS["relay"])
-        cs.PROV_NAME = "relay"
-        cs.PROV["url"] = "https://relay.test/claude/v1/messages"
-        cs.PROV["models_url"] = "https://relay.test/claude/v1/models"
-        cs.KEY = "cr_testkey"
-        cs.RELAY_MODELS = []
-        cs.RELAY_FORCE_MODEL = None
+        self.ctx = context(
+            "relay",
+            key="cr_testkey",
+            prov={
+                "url": "https://relay.test/claude/v1/messages",
+                "models_url": "https://relay.test/claude/v1/models",
+            },
+        )
 
     def test_auth_headers_both(self):
-        h = cs._upstream_auth_headers()
+        h = cs._upstream_auth_headers(self.ctx)
         self.assertEqual(h.get("x-api-key"), "cr_testkey")
         self.assertEqual(h.get("Authorization"), "Bearer cr_testkey")
 
     def test_deepseek_auth_headers_default_xapikey(self):
         # 回归：deepseek 未设 auth_style → 仍只带 x-api-key（不误引入 Bearer）。
-        cs.PROV = cs.PROVIDERS["deepseek"]
-        cs.KEY = "sk-ds"
-        self.assertEqual(cs._upstream_auth_headers(), {"x-api-key": "sk-ds"})
+        deepseek = context("deepseek", key="sk-ds")
+        self.assertEqual(cs._upstream_auth_headers(deepseek), {"x-api-key": "sk-ds"})
 
     def test_models_normalized_and_cache_refreshed(self):
         # 用假 http_get_json 复刻中转站 OpenAI 风格返回，验证归一化成 Anthropic 格式
@@ -207,13 +282,13 @@ class RelayProvider(unittest.TestCase):
             ]
         }
         try:
-            out = cs.fetch_relay_models()
+            out = cs.fetch_relay_models(self.ctx)
         finally:
             cs.http_get_json = orig
         self.assertEqual([m["id"] for m in out], ["claude-opus-4-8", "claude-3-5-sonnet-20241022"])
         self.assertTrue(all(m["type"] == "model" for m in out))
         self.assertEqual(out[0]["display_name"], "claude-opus-4-8")
-        self.assertEqual(cs.RELAY_MODELS, ["claude-opus-4-8", "claude-3-5-sonnet-20241022"])
+        self.assertEqual(self.ctx.relay_models, ["claude-opus-4-8", "claude-3-5-sonnet-20241022"])
 
     def test_models_carry_supports_tools_from_supported_parameters(self):
         orig = cs.http_get_json
@@ -223,7 +298,7 @@ class RelayProvider(unittest.TestCase):
             {"id": "glm-x"},                                                        # 无字段 → None（不臆测）
         ]}
         try:
-            out = cs.fetch_relay_models()
+            out = cs.fetch_relay_models(self.ctx)
         finally:
             cs.http_get_json = orig
         got = {m["id"]: m["supports_tools"] for m in out}
@@ -233,7 +308,7 @@ class RelayProvider(unittest.TestCase):
         orig = cs.http_get_json
         cs.http_get_json = lambda url, headers: {"data": [{"id": "glm-4.6"}]}
         try:
-            code, body = cs.build_models_response()
+            code, body = cs.build_models_response(self.ctx)
         finally:
             cs.http_get_json = orig
         self.assertEqual(code, 200)
@@ -246,7 +321,7 @@ class RelayProvider(unittest.TestCase):
         orig = cs.http_get_json
         cs.http_get_json = boom
         try:
-            code, body = cs.build_models_response()
+            code, body = cs.build_models_response(self.ctx)
         finally:
             cs.http_get_json = orig
         self.assertEqual(code, 401)                    # 不再吞成 200 + 静态
@@ -259,7 +334,7 @@ class RelayProvider(unittest.TestCase):
         orig = cs.http_get_json
         cs.http_get_json = boom
         try:
-            code, body = cs.build_models_response()
+            code, body = cs.build_models_response(self.ctx)
         finally:
             cs.http_get_json = orig
         self.assertEqual(code, 502)
@@ -267,8 +342,7 @@ class RelayProvider(unittest.TestCase):
 
     def test_build_models_response_non_relay_returns_static(self):
         # deepseek/qwen（无 models_url）→ 仍回静态选择器列表，行为不变。
-        cs.PROV = cs.PROVIDERS["deepseek"]
-        code, body = cs.build_models_response()
+        code, body = cs.build_models_response(context("deepseek"))
         self.assertEqual(code, 200)
         ids = [m["id"] for m in body["data"]]
         self.assertIn("claude-opus-4-8", ids)
@@ -276,16 +350,16 @@ class RelayProvider(unittest.TestCase):
 
 class OpenAICustomProvider(unittest.TestCase):
     def setUp(self):
-        cs.PROV = dict(cs.PROVIDERS["openai-custom"])
-        cs.PROV_NAME = "openai-custom"
-        cs.PROV["url"] = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-        cs.PROV["models_url"] = "https://open.bigmodel.cn/api/paas/v4/models"
-        cs.PROV["default_model"] = "glm-4.5"
-        cs.KEY = "sk-openai"
-        cs.RELAY_FORCE_MODEL = "glm-4.5"
-
-    def tearDown(self):
-        cs.RELAY_FORCE_MODEL = None
+        self.ctx = context(
+            "openai-custom",
+            key="sk-openai",
+            relay_force_model="glm-4.5",
+            prov={
+                "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                "models_url": "https://open.bigmodel.cn/api/paas/v4/models",
+                "default_model": "glm-4.5",
+            },
+        )
 
     def test_openai_base_root_normalization(self):
         root = "https://open.bigmodel.cn/api/paas/v4"
@@ -316,12 +390,15 @@ class OpenAICustomProvider(unittest.TestCase):
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 1000000,
         }
-        out = cs.anthropic_to_openai(req)
+        out = cs.anthropic_to_openai(req, self.ctx)
         self.assertEqual(out["model"], "glm-4.5")
         self.assertEqual(out["max_tokens"], 1000000, "custom OpenAI 不做通用 token 夹取")
 
     def test_auth_headers_bearer_only(self):
-        self.assertEqual(cs._upstream_auth_headers(), {"Authorization": "Bearer sk-openai"})
+        self.assertEqual(
+            cs._upstream_auth_headers(self.ctx),
+            {"Authorization": "Bearer sk-openai"},
+        )
 
     def test_models_uses_bearer_without_anthropic_version(self):
         seen = {}
@@ -334,7 +411,7 @@ class OpenAICustomProvider(unittest.TestCase):
 
         cs.http_get_json = fake
         try:
-            out = cs.fetch_relay_models()
+            out = cs.fetch_relay_models(self.ctx)
         finally:
             cs.http_get_json = orig
         self.assertEqual(seen["url"], "https://open.bigmodel.cn/api/paas/v4/models")
@@ -343,11 +420,11 @@ class OpenAICustomProvider(unittest.TestCase):
         self.assertEqual([m["id"] for m in out], ["glm-4.5"])
 
     def test_models_discovery_works_without_forced_model(self):
-        cs.RELAY_FORCE_MODEL = None
+        self.ctx.relay_force_model = None
         orig = cs.http_get_json
         cs.http_get_json = lambda url, headers: {"data": [{"id": "glm-4.5"}]}
         try:
-            code, body = cs.build_models_response()
+            code, body = cs.build_models_response(self.ctx)
         finally:
             cs.http_get_json = orig
         self.assertEqual(code, 200)
@@ -355,18 +432,14 @@ class OpenAICustomProvider(unittest.TestCase):
 
 
 class BuildModelsResponse(unittest.TestCase):
-    def setUp(self):
-        self._saved = (cs.PROV, cs.PROV_NAME, cs.RELAY_FORCE_MODEL)
-
-    def tearDown(self):
-        cs.PROV, cs.PROV_NAME, cs.RELAY_FORCE_MODEL = self._saved
-
     def test_force_returns_single_shell(self):
         # force（Science 常驻代理）：/v1/models 只返回一个壳，display_name=真实模型名。
-        cs.PROV = {"models_url": "https://r/v1/models"}
-        cs.PROV_NAME = "relay"
-        cs.RELAY_FORCE_MODEL = "glm-5.2"
-        code, body = cs.build_models_response()
+        ctx = context(
+            "relay",
+            relay_force_model="glm-5.2",
+            prov={"models_url": "https://r/v1/models"},
+        )
+        code, body = cs.build_models_response(ctx)
         self.assertEqual(code, 200)
         self.assertEqual(
             body["data"],
@@ -382,13 +455,11 @@ class BuildModelsResponse(unittest.TestCase):
 
     def test_not_forced_falls_back_to_source(self):
         # 未 force（app 获取模型的临时代理）：仍回源拿真实 id 供用户选（两个消费者切分）。
-        cs.PROV = {"models_url": "https://r/v1/models"}
-        cs.PROV_NAME = "relay"
-        cs.RELAY_FORCE_MODEL = None
+        ctx = context("relay", prov={"models_url": "https://r/v1/models"})
         saved_fetch = cs.fetch_relay_models
-        cs.fetch_relay_models = lambda: [{"type": "model", "id": "glm-4.6"}]
+        cs.fetch_relay_models = lambda _ctx: [{"type": "model", "id": "glm-4.6"}]
         try:
-            code, body = cs.build_models_response()
+            code, body = cs.build_models_response(ctx)
         finally:
             cs.fetch_relay_models = saved_fetch
         self.assertEqual(code, 200)

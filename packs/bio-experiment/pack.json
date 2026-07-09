@@ -1,0 +1,29 @@
+{
+  "id": "bio-experiment",
+  "name": "Agentic experimental design",
+  "description": "Closed-loop biomedical experiment design: literature gap to testable hypothesis, a priori power, ELN-ready protocol, reagent/equipment checklist, cost/timeline estimate, preregistration template, and failure-mode analysis.",
+  "version": "0.1.0",
+  "dependencies": ["bio-lit", "bio-audit", "bio-critique", "bio-gene", "bio-drug", "bio-kg"],
+  "requires_tools": [
+    {"name": "python3", "kind": "runtime", "required": true, "purpose": "Run the local experiment-design MCP server"}
+  ],
+  "requires_env": [],
+  "optional_env": [
+    {"name": "ADDGENE_API_KEY", "label": "Optional Addgene API key"},
+    {"name": "ATCC_API_KEY", "label": "Optional ATCC API key"}
+  ],
+  "depends_on": ["bio-lit", "bio-audit", "bio-critique", "bio-gene", "bio-drug", "bio-kg"],
+  "servers": [
+    {
+      "name": "bio-experiment",
+      "script": "packs/bio-experiment/experiment_server.py",
+      "env_pass": ["ADDGENE_API_KEY", "ATCC_API_KEY"]
+    }
+  ],
+  "skills": [
+    {
+      "id": "experimental-design",
+      "src": "packs/bio-experiment/skills/experimental-design"
+    }
+  ]
+}

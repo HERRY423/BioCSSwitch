@@ -46,6 +46,55 @@ def _dsml_json_body():
     }, ensure_ascii=False).encode("utf-8")
 
 
+class OpenAIChatTranslation(unittest.TestCase):
+    def test_request_translation_preserves_tools_and_sampling(self):
+        body = {
+            "system": [{"type": "text", "text": "be precise"}],
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 100000,
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "stop_sequences": ["STOP"],
+            "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "tool", "name": "lookup"},
+        }
+        out = ac.anthropic_to_openai(body, "qwen-plus", max_tokens=8192)
+        self.assertEqual(out["model"], "qwen-plus")
+        self.assertEqual(out["max_tokens"], 8192)
+        self.assertEqual(out["messages"][0], {"role": "system", "content": "be precise"})
+        self.assertEqual(out["tool_choice"],
+                         {"type": "function", "function": {"name": "lookup"}})
+        self.assertEqual(out["stop"], ["STOP"])
+        self.assertEqual(out["top_p"], 0.8)
+
+    def test_response_translation_preserves_tool_calls_and_usage(self):
+        body = {
+            "choices": [{
+                "message": {
+                    "content": "checking",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {"name": "lookup", "arguments": '{"q":"TP53"}'},
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+        }
+        out = ac.openai_to_anthropic(body, "claude-opus-4-8")
+        self.assertEqual(out["stop_reason"], "tool_use")
+        self.assertEqual(out["content"][1]["input"], {"q": "TP53"})
+        self.assertEqual(out["usage"], {"input_tokens": 7, "output_tokens": 3})
+
+    def test_invalid_tool_arguments_degrade_to_empty_object(self):
+        body = {"choices": [{"message": {"tool_calls": [{
+            "id": "call_1",
+            "function": {"name": "lookup", "arguments": "{bad json"},
+        }]}}]}
+        out = ac.openai_to_anthropic(body, "m")
+        self.assertEqual(out["content"][0]["input"], {})
+
+
 class TransformRequest(unittest.TestCase):
     def test_deepseek_maps_model_clamps_normalizes_thinking(self):
         st = _state(cs.PROVIDERS["deepseek"], "deepseek")

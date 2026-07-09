@@ -332,5 +332,78 @@ class ProxyOpenAIResponses(unittest.TestCase):
         self.assertNotIn("/up/v1/chat/completions", self.hits)
 
 
+@unittest.skipUnless(loopback_available(), "env-blocked: loopback bind/connect not permitted")
+class ProxyUltraEndToEnd(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.up_url, cls.hits, cls.stop_up = start_mock("openai_responses")
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.config_path = os.path.join(cls.tmp.name, "config.json")
+        cls.ledger_path = os.path.join(cls.tmp.name, "ultra-ledger.jsonl")
+        with open(cls.config_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "active_id": "responses",
+                "profiles": [{
+                    "id": "responses",
+                    "name": "Ultra Responses",
+                    "template_id": "custom-openai-responses",
+                    "api_key": "sk-ultra-e2e-secret",
+                    "base_url": cls.up_url,
+                    "model": "gpt-5.2",
+                }],
+            }, f)
+
+        port = 18997
+        cls.base = f"http://127.0.0.1:{port}"
+        cls.logf = os.path.join(cls.tmp.name, "proxy.log")
+        env = dict(
+            os.environ,
+            DEEPSEEK_API_KEY="unused-active-key",
+            CSSWITCH_ULTRA_MODE="ultra_conservative",
+            CSSWITCH_CONFIG_PATH=cls.config_path,
+            CSSWITCH_ULTRA_LEDGER=cls.ledger_path,
+        )
+        cls.proc = subprocess.Popen(
+            [sys.executable, PROXY, "--provider", "deepseek",
+             "--port", str(port), "--auth-token", SEC, "--log", cls.logf],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            try:
+                status, _body = _req(f"{cls.base}/{SEC}/health")
+                if status == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(timeout=5)
+        cls.stop_up()
+        cls.tmp.cleanup()
+
+    def test_http_request_runs_ultra_responses_route_and_writes_safe_ledger(self):
+        status, raw = _req(
+            f"{self.base}/{SEC}/v1/messages",
+            "POST",
+            {
+                "model": "claude-opus-4-8",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Summarize this result."}],
+            },
+        )
+        self.assertEqual(status, 200, raw[:200])
+        body = json.loads(raw)
+        self.assertEqual(body["content"], [{"type": "text", "text": "ok-responses"}])
+        self.assertIn("/up/v1/responses", self.hits)
+        self.assertNotIn("/up/v1/chat/completions", self.hits)
+
+        with open(self.ledger_path, encoding="utf-8") as f:
+            ledger = f.read()
+        self.assertIn('"mode": "ultra_conservative"', ledger)
+        self.assertNotIn("sk-ultra-e2e-secret", ledger)
+
+
 if __name__ == "__main__":
     unittest.main()

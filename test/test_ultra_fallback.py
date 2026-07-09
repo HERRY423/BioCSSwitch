@@ -9,8 +9,10 @@ import urllib.error
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxy"))
 
 import fallback_policy as fp
+import anthropic_compat
 import task_router
 import ultra_orchestrator as ultra
+import debate_arena
 
 
 def anthropic_msg(text):
@@ -97,6 +99,69 @@ class TaskRouterTests(unittest.TestCase):
         self.assertEqual([c["profile_id"] for c in plan["contexts"][:2]], ["p1", "p2"])
         self.assertEqual(plan["candidates"][2]["probe_status"], "degraded")
 
+    def test_custom_openai_profile_uses_openai_chat_context(self):
+        profile = {
+            "id": "p-openai",
+            "template_id": "custom-openai",
+            "api_key": "sk-openai",
+            "base_url": "https://example.com/v1/chat/completions",
+            "model": "gpt-5",
+            "name": "openai chat",
+        }
+        ctx = task_router.context_from_profile(profile)
+        self.assertEqual(ctx["provider"], "openai-custom")
+        self.assertEqual(ctx["mode"], "openai")
+        self.assertEqual(ctx["url"], "https://example.com/v1/chat/completions")
+        self.assertEqual(ctx["models_url"], "https://example.com/v1/models")
+        self.assertEqual(ctx["auth_style"], "bearer")
+
+    def test_custom_openai_responses_profile_uses_responses_context(self):
+        profile = {
+            "id": "p-responses",
+            "template_id": "custom-openai-responses",
+            "api_key": "sk-openai",
+            "base_url": "https://example.com/v1",
+            "model": "gpt-5.1",
+            "name": "openai responses",
+        }
+        ctx = task_router.context_from_profile(profile)
+        self.assertEqual(ctx["provider"], "openai-responses")
+        self.assertEqual(ctx["mode"], "openai")
+        self.assertEqual(ctx["url"], "https://example.com/v1/responses")
+        self.assertEqual(ctx["models_url"], "https://example.com/v1/models")
+        self.assertEqual(ctx["auth_style"], "bearer")
+
+    def test_chinese_requests_are_classified(self):
+        cases = [
+            ("请做一轮科学辩论并量化不确定性", "scientific-debate"),
+            ("系统综述这个靶点的临床证据", "lit-review"),
+            ("整理临床试验终点与入排标准", "clinical-trials"),
+            ("核验这些引用并做证据审计", "evidence-check"),
+            ("为单细胞组学写 Scanpy 流程", "omics-code"),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                req = {"messages": [{"role": "user", "content": text}]}
+                self.assertEqual(task_router.detect_task(req), expected)
+
+
+class DebateArenaTests(unittest.TestCase):
+    def test_grade_ties_break_conservatively(self):
+        grade = debate_arena._aggregate_grade(
+            {"High": 1, "Moderate": 0, "Low": 0, "Very Low": 1},
+            ["PMID:12345678"],
+            [],
+        )
+        self.assertEqual(grade["grade"], "Very Low")
+
+    def test_equal_votes_stay_conservative(self):
+        grade = debate_arena._aggregate_grade(
+            {"High": 1, "Moderate": 1, "Low": 1, "Very Low": 1},
+            ["PMID:12345678"],
+            [],
+        )
+        self.assertEqual(grade["grade"], "Very Low")
+
 
 class UltraOrchestratorTests(unittest.TestCase):
     def test_rate_limit_falls_back_to_second_profile(self):
@@ -159,6 +224,31 @@ class UltraOrchestratorTests(unittest.TestCase):
         active = task_router.current_context("deepseek", {"mode": "anthropic", "url": "u"}, "sk")
         self.assertIsNone(ultra.handle_request(req, active, {}, lambda *_: None, None))
 
+    def test_ultra_uses_shared_provider_model_policy(self):
+        qwen = task_router.current_context(
+            "qwen", {"mode": "openai", "url": "u"}, "sk")
+        self.assertEqual(
+            ultra.resolve_model("claude-opus-4-8", qwen), "qwen-max")
+        self.assertEqual(
+            ultra.clamp_max_tokens(100000, qwen, "qwen-max"), 8192)
+
+    def test_ultra_relay_thinking_uses_shared_normalization(self):
+        relay = task_router.current_context(
+            "relay",
+            {"mode": "anthropic", "url": "u", "auth_style": "both"},
+            "sk",
+            force_model="kimi-k2.5",
+            thinking_policy="enabled",
+        )
+        body, _ctx = anthropic_compat.transform_request({
+            "model": "claude-opus-4-8",
+            "max_tokens": 2048,
+            "tools": [{"name": "lookup"}],
+            "tool_choice": {"type": "tool", "name": "lookup"},
+        }, ultra._provider_state(relay))
+        self.assertNotIn("tool_choice", body)
+        self.assertEqual(body["thinking"]["type"], "enabled")
+
     def test_verifier_only_runs_for_clinical_evidence_or_phi(self):
         req = {"messages": [{"role": "user", "content": "verify citation"}]}
         resp = anthropic_msg("This is supported by PMID: 12345678.")
@@ -196,6 +286,207 @@ class UltraOrchestratorTests(unittest.TestCase):
         self.assertNotIn("toolsmith", conservative["roles_run"])
         self.assertIn("toolsmith", deep["roles_run"])
         self.assertIn("planner", deep["roles_run"])
+
+
+class UltraEndToEndAcceptanceTests(unittest.TestCase):
+    def test_responses_profile_round_trips_through_ultra(self):
+        cfg = {
+            "active_id": "responses",
+            "profiles": [{
+                "id": "responses",
+                "template_id": "custom-openai-responses",
+                "api_key": "sk-responses",
+                "base_url": "https://example.test/v1",
+                "model": "gpt-5.1",
+            }],
+        }
+        req = {
+            "model": "claude-opus-4-8",
+            "max_tokens": 256,
+            "system": "Be precise.",
+            "messages": [{"role": "user", "content": "Summarize the result."}],
+        }
+        captured = {}
+
+        def fake_post(url, data, headers):
+            captured.update(url=url, payload=json.loads(data), headers=headers)
+            return json.dumps({
+                "id": "resp_123",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "responses answer"}],
+                }],
+                "usage": {"input_tokens": 4, "output_tokens": 2},
+            }).encode(), "application/json"
+
+        active = task_router.current_context(
+            "deepseek", {"mode": "anthropic", "url": "unused"}, "sk-active")
+        result = ultra.handle_request(req, active, cfg, fake_post, ledger_path=None)
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(captured["url"], "https://example.test/v1/responses")
+        self.assertEqual(captured["payload"]["model"], "gpt-5.1")
+        self.assertIn("input", captured["payload"])
+        self.assertNotIn("messages", captured["payload"])
+        self.assertEqual(captured["payload"]["max_output_tokens"], 256)
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer sk-responses")
+        self.assertIn("responses answer", json.dumps(result.body))
+
+    def test_failure_specific_route_is_tried_before_generic_fallback(self):
+        cfg = {
+            "active_id": "p1",
+            "ultra": {"task_policies": {"general": {
+                "fallback_profile_ids": ["p3"],
+                "failure_routes": {fp.RATE_LIMIT: ["p2"]},
+            }}},
+            "profiles": [
+                {"id": "p1", "template_id": "deepseek", "api_key": "sk-p1"},
+                {"id": "p2", "template_id": "qwen", "api_key": "sk-p2"},
+                {"id": "p3", "template_id": "qwen", "api_key": "sk-p3"},
+            ],
+        }
+        req = {"messages": [{"role": "user", "content": "hello"}]}
+        calls = []
+
+        def fake_post(url, data, headers):
+            key = headers.get("x-api-key") or headers.get("Authorization")
+            calls.append(key)
+            if key == "sk-p1":
+                raise urllib.error.HTTPError(url, 429, "rate", {}, io.BytesIO(b"rate limit"))
+            if key == "Bearer sk-p3":
+                raise AssertionError("generic fallback ran before the rate-limit route")
+            return json.dumps({
+                "id": "chatcmpl",
+                "choices": [{"message": {"content": "recovered"}, "finish_reason": "stop"}],
+            }).encode(), "application/json"
+
+        active = task_router.current_context(
+            "deepseek", {"mode": "anthropic", "url": "unused"}, "sk-active")
+        result = ultra.handle_request(req, active, cfg, fake_post, ledger_path=None)
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(calls, ["sk-p1", "Bearer sk-p2"])
+        self.assertEqual([attempt.profile_id for attempt in result.attempts], ["p1", "p2"])
+
+    def test_exhausted_quality_gate_returns_gateway_error(self):
+        cfg = {
+            "active_id": "p1",
+            "ultra": {"max_attempts": 1},
+            "profiles": [
+                {"id": "p1", "template_id": "deepseek", "api_key": "sk-p1"},
+            ],
+        }
+        req = {
+            "messages": [{"role": "user", "content": "核验 PMID 12345678 并做证据审计"}],
+        }
+
+        def fake_post(url, data, headers):
+            return json.dumps(anthropic_msg("not strict json")).encode(), "application/json"
+
+        active = task_router.current_context(
+            "deepseek", {"mode": "anthropic", "url": "unused"}, "sk-active")
+        result = ultra.handle_request(req, active, cfg, fake_post, ledger_path=None)
+
+        self.assertEqual(result.status, 502)
+        self.assertEqual(result.body["error"]["csswitch_failure_kind"], fp.JSON_UNSTABLE)
+        self.assertEqual(result.attempts[0].status, 200)
+
+    def test_chinese_phi_is_filtered_to_local_profile(self):
+        cfg = {
+            "sensitive_mode": True,
+            "active_id": "cloud",
+            "profiles": [
+                {"id": "cloud", "template_id": "deepseek", "api_key": "sk-cloud"},
+                {
+                    "id": "local",
+                    "template_id": "custom-openai",
+                    "api_key": "sk-local",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "local-model",
+                },
+            ],
+        }
+        req = {
+            "messages": [{
+                "role": "user",
+                "content": "患者出生日期：1970-01-02，住院号：123456，请脱敏后总结。",
+            }],
+        }
+        calls = []
+
+        def fake_post(url, data, headers):
+            calls.append(url)
+            return json.dumps({
+                "id": "chatcmpl",
+                "choices": [{"message": {"content": "已脱敏"}, "finish_reason": "stop"}],
+            }, ensure_ascii=False).encode(), "application/json"
+
+        active = task_router.current_context(
+            "deepseek", {"mode": "anthropic", "url": "unused"}, "sk-active")
+        result = ultra.handle_request(req, active, cfg, fake_post, ledger_path=None)
+
+        self.assertTrue(ultra.request_has_phi(req))
+        self.assertEqual(result.status, 200)
+        self.assertEqual(calls, ["http://127.0.0.1:11434/v1/chat/completions"])
+        sensitive_events = [
+            event for event in result.route_plan["events"]
+            if event.get("kind") == "sensitive_filter"
+        ]
+        self.assertTrue(sensitive_events)
+        self.assertEqual(sensitive_events[0]["skipped"][0]["profile_id"], "cloud")
+
+    def test_debate_path_returns_structured_scientific_result(self):
+        cfg = {
+            "active_id": "p1",
+            "ultra": {
+                "force_scientific_debate": True,
+                "debate": {"max_agents": 2, "rounds": 1},
+            },
+            "profiles": [
+                {"id": "p1", "template_id": "deepseek", "api_key": "sk-p1"},
+                {"id": "p2", "template_id": "qwen", "api_key": "sk-p2"},
+            ],
+        }
+        req = {
+            "model": "claude-opus-4-8",
+            "messages": [{"role": "user", "content": "Debate whether this mechanism is causal."}],
+        }
+        calls = []
+
+        def fake_post(url, data, headers):
+            calls.append(url)
+            text = (
+                "claim_summary: plausible\n"
+                "strongest_evidence: perturbation\n"
+                "weakest_link: missing replication\n"
+                "uncertainty_0_to_1: 0.4\n"
+                "evidence_grade: Moderate\n"
+                "decisive_next_experiment: validate with a powered assay"
+            )
+            if "dashscope" in url:
+                return json.dumps({
+                    "id": "chatcmpl",
+                    "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+                }).encode(), "application/json"
+            return json.dumps(anthropic_msg(text)).encode(), "application/json"
+
+        active = task_router.current_context(
+            "deepseek", {"mode": "anthropic", "url": "unused"}, "sk-active")
+        result = ultra.handle_request(req, active, cfg, fake_post, ledger_path=None)
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(len(calls), 2)
+        debate = json.loads(result.body["content"][0]["text"])
+        self.assertEqual(debate["schema"], "bio-debate/scientific-debate/1")
+        self.assertEqual(debate["structured_debate_record"]["successful_turns"], 2)
+        self.assertIn(debate["integrated_judgment"]["verdict"], {
+            "provisionally_supported", "plausible_but_contested", "not_ready_for_strong_claim",
+        })
+        self.assertTrue(any(
+            event.get("kind") == "scientific_debate"
+            for event in result.route_plan["events"]
+        ))
 
 
 if __name__ == "__main__":

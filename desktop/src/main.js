@@ -1,3 +1,11 @@
+import {
+  CAP,
+  isNativeAdapter,
+  modelCapability,
+  openaiCustomAnthropicBaseMessage,
+  sourceHint,
+} from "./ui-logic.js";
+
 // BioCSSwitch 桌面面板前端。只调用后端 Tauri command，绝不碰任何密钥落盘逻辑。
 // 后端只把 key 的【掩码】回显给这里；完整 key 永不进前端。
 //
@@ -204,38 +212,6 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 const CAT_LABELS = { official: "官方", cn_official: "国内", custom: "自定义" };
 
-// ── 模型能力（三态，纯函数，无 DOM）：native 映射 / relay 跟随 / relay 固定。──
-const CAP = { NATIVE: "native", FOLLOW: "follow", FIXED: "fixed" };
-function isNativeAdapter(a) { return a === "deepseek" || a === "qwen"; }
-function modelCapability(t) {
-  if (!t) return CAP.FIXED;                       // 未知模板：最保守，要求填模型
-  if (isNativeAdapter(t.adapter)) return CAP.NATIVE;
-  return t.requires_model_override ? CAP.FIXED : CAP.FOLLOW;
-}
-// 来源提示：据「地址是否可编辑 + 模型能力」生成，不能只看 category
-// （OpenRouter 的 category 是 custom，但地址只读、模型可跟随；只看 category 会误导）。
-function sourceHint(t) {
-  if (!t) return "选择来源后按提示填写。";
-  // 真·自定义（可编辑且无预设地址）才叫「自定义端点」；预设虽可编辑但有官方默认，另行描述。
-  if (t.base_url_editable && !t.base_url && t.api_format === "openai_chat") {
-    return "自定义 OpenAI Chat Completions 兼容端点：填 base root、key 与模型，经代理转换协议。";
-  }
-  if (t.base_url_editable && !t.base_url && t.api_format === "openai_responses") {
-    return "自定义 OpenAI Responses 兼容端点：填 base root、key 与模型，经代理转换协议。";
-  }
-  if (t.base_url_editable && !t.base_url) return "自定义 Anthropic 兼容端点：填地址与 key，用「获取模型」列出并选一个。";
-  const cap = modelCapability(t);
-  if (cap === CAP.NATIVE) {
-    // deepseek 是原生 Anthropic 透传；qwen 经代理做 Anthropic↔OpenAI 转换，别都叫「直连」。
-    return t.adapter === "qwen"
-      ? "官方端点（经代理转换协议）：填 API Key 即可，地址与模型都已内置。"
-      : "官方原生端点（无需转换）：填 API Key 即可，地址与模型都已内置。";
-  }
-  // 预设地址可编辑：默认已填好官方地址，套餐/区域端点可改（如小米 token plan）。
-  const addr = t.base_url_editable ? "地址已预填官方默认（套餐 / 区域端点可改）" : "地址已预设";
-  if (cap === CAP.FOLLOW) return `填 API Key 即可，${addr}，模型默认跟随 Science。`;
-  return `填 API Key 并选一个模型，${addr}。`;
-}
 const MODEL_HINT = {
   native: "由 Science 选择器 + 内置映射自动选择（opus 深度 / haiku 快速）。",
   follow: "留空＝跟随 Science 选择器（保留 opus/haiku 各档）；选一个＝固定用于所有请求。",
@@ -655,13 +631,6 @@ function refreshWizGate() {
   const t = tplById(els.wizTemplate ? els.wizTemplate.value : "");
   const need = t && t.requires_model_override;
   els.wizSaveBtn.disabled = busy || !!(need && !els.wizModel.value.trim());
-}
-
-function openaiCustomAnthropicBaseMessage(t, base) {
-  if (t && (t.id === "custom-openai" || t.id === "custom-openai-responses") && (base || "").trim().toLowerCase().includes("/anthropic")) {
-    return "这个地址看起来是 Anthropic 兼容端点。请改选「自定义 Anthropic」，或填写 OpenAI 兼容 base root（如 https://api.moonshot.cn/v1）。";
-  }
-  return "";
 }
 
 async function wizFetch() {

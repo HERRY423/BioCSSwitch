@@ -11,26 +11,30 @@ description: 用于单细胞 RNA-seq 数据的标准化预处理、QC、doublet 
 
 1. **参数即数据**。filter / normalize / HVG / doublet / batch / annotation 的参数都要落进 `recipe_hash`。
 2. **输入要指纹**。任何建模或下游分析前，先 `anndata_fingerprint`，并让用户本地计算真·内容哈希。
-3. **QC 阈值可解释**。用 MAD-based（median ± n×MAD），讲清楚剔除规则。
-4. **不代跑**。只产出脚本；不能声称已经算出 cluster 数、marker、DEG 或 doublet 数量。
+3. **样本是推断单位**。condition-level 统计必须有 sample/donor key；cell 不能充当 biological replicate。
+4. **QC 阈值可解释且分样本**。优先按 sample/capture library 用 MAD-based 阈值，保存逐细胞排除原因。
+5. **整合必须验收**。保留未整合表示，同时检查 batch mixing 与 biological conservation，防止 over-correction。
+6. **不代跑**。只产出脚本；不能声称已经算出 cluster 数、marker、DEG 或 doublet 数量。
 
 ## 工作流
 
-**Step 1：了解数据**。确认物种、assay、细胞数、基因 ID 类型、是否有 raw counts、是否多 batch、是否 CITE-seq / multiome / spatial。
+**Step 1：了解数据与设计**。确认物种、assay、细胞数、sample/donor、condition、capture library、batch、配对关系、基因 ID 类型、是否有 raw counts、是否 CITE-seq / multiome / spatial。先检查 condition×batch 混杂；完全混杂时不得生成 condition-level 结论。
 
 **Step 2：指纹**。调用 `anndata_fingerprint(descriptor=...)`，拿元数据指纹和真·内容哈希 snippet。
 
-**Step 3：QC 阈值**。调用 `sc_qc_thresholds(stats=...)`，用每指标 median/MAD 给出阈值。
+**Step 3：QC 阈值**。调用 `sc_qc_thresholds(stats=...)`，按 sample/capture library 用每指标 median/MAD 给出阈值。固定线粒体阈值只能是组织相关的硬上限；保留过滤前指标、阈值表和逐细胞排除原因。
 
-**Step 4：doublet 检测**。需要 10x / droplet 数据时调用 `sc_doublet_recipe`。默认 Scrublet；R 用户或 Bioconductor 管线可选 scDblFinder。
+**Step 4：doublet/ambient 检查**。需要 10x / droplet 数据时调用 `sc_doublet_recipe`，按 capture library 分开运行。默认 Scrublet；R 用户可选 scDblFinder。ambient RNA 校正需要 raw/filtered droplets；只有 filtered H5AD 时不能伪造这一步。
 
 **Step 5：预处理配方**。调用 `sc_preprocess_recipe(target_model=...)`。Geneformer 不做 log/HVG，scGPT 要 HVG + value binning，generic 走标准 scanpy。
 
-**Step 6：batch 整合**。多批次数据调用 `sc_batch_recipe`。简单 batch 先 Harmony；复杂跨协议优先 scVI；大规模可考虑 BBKNN；跨数据集 merge 可用 Scanorama。
+**Step 6：batch 整合**。多批次不等于必须整合。确有技术效应时调用 `sc_batch_recipe`：简单 batch 先 Harmony；复杂跨协议考虑 scVI；大规模可考虑 BBKNN；跨数据集 merge 可用 Scanorama。必须保留未整合 PCA/邻居图基线，比较整合前后的 batch mixing、已知 cell type/condition conservation 与稀有群体保留；不得覆盖 counts。
 
 **Step 7：基因 ID 转换**。如果下游模型、富集或参考集需要不同 ID，调用 `sc_geneid_convert`。必须保留 unmatched / multimapped 审计表。
 
 **Step 8：细胞注释**。聚类/embedding 后调用 `sc_celltype_recipe`。CellTypist / SingleR / marker-based 都要输出置信度或交叉表，不把注释当作事实。
+
+注释采用 reference、正/负 marker、跨样本复现三角验证；低置信度和冲突细胞保留 `unknown` / `ambiguous`，不强制精确命名。
 
 **Step 9：特殊模态**。CITE-seq / multiome 用 `sc_multimodal_recipe`；Visium / MERFISH / Slide-seq 用 `sc_spatial_recipe`。
 
@@ -41,6 +45,10 @@ description: 用于单细胞 RNA-seq 数据的标准化预处理、QC、doublet 
 > 我帮你去掉了 doublets、整合了 batch，并发现了 8 个 cluster，其中 cluster 3 是 T cell。
 
 问题：在对话里假装完成计算，没给 recipe_hash、没保留输入指纹，也没有用户本地运行产生的结果文件。
+
+> condition 和 batch 完全重合，但 Harmony 后 UMAP 混得很好，因此发现了疾病特异细胞状态。
+
+问题：UMAP 混合不能修复不可识别的实验设计；强整合还可能删除真实 condition signal。
 
 ## 边界
 

@@ -10,6 +10,337 @@ import dsml_shim
 import provider_policy
 
 
+def map_tool_choice(tool_choice, tools):
+    """Translate Anthropic tool_choice into the OpenAI Chat shape."""
+    if not isinstance(tool_choice, dict):
+        return None
+    choice_type = tool_choice.get("type")
+    if choice_type == "auto":
+        return "auto"
+    if choice_type == "none":
+        return "none"
+    if choice_type == "tool" and tool_choice.get("name"):
+        return {"type": "function", "function": {"name": tool_choice["name"]}}
+    if choice_type == "any":
+        names = [
+            tool["name"]
+            for tool in (tools or [])
+            if isinstance(tool, dict) and tool.get("name")
+        ]
+        if len(names) == 1:
+            return {"type": "function", "function": {"name": names[0]}}
+        return "required"
+    return None
+
+
+def anthropic_to_openai(body, target_model, max_tokens=None):
+    """Translate an Anthropic Messages request to OpenAI Chat Completions."""
+    messages = []
+    system_prompt = body.get("system")
+    if isinstance(system_prompt, list):
+        system_prompt = "\n".join(
+            block.get("text", "")
+            for block in system_prompt
+            if isinstance(block, dict)
+        )
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+    for message in body.get("messages", []):
+        role = message.get("role")
+        content = message.get("content")
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+            continue
+
+        text_parts = []
+        tool_calls = []
+        tool_results = []
+        for block in content or []:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                text_parts.append(block.get("text", ""))
+            elif block_type == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name"),
+                        "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
+                    },
+                })
+            elif block_type == "tool_result":
+                result = block.get("content")
+                if isinstance(result, list):
+                    result = "".join(
+                        item.get("text", "")
+                        for item in result
+                        if isinstance(item, dict)
+                    )
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": block.get("tool_use_id"),
+                    "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False),
+                })
+
+        if role == "assistant" and tool_calls:
+            messages.append({
+                "role": "assistant",
+                "content": "".join(text_parts) or None,
+                "tool_calls": tool_calls,
+            })
+        elif tool_results:
+            messages.extend(tool_results)
+            if text_parts:
+                messages.append({"role": role, "content": "".join(text_parts)})
+        else:
+            messages.append({"role": role, "content": "".join(text_parts)})
+
+    out = {"model": target_model, "messages": messages, "stream": False}
+    effective_max_tokens = body.get("max_tokens") if max_tokens is None else max_tokens
+    if effective_max_tokens:
+        out["max_tokens"] = effective_max_tokens
+    if body.get("temperature") is not None:
+        out["temperature"] = body["temperature"]
+    if body.get("tools"):
+        out["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {}),
+                },
+            }
+            for tool in body["tools"]
+            if isinstance(tool, dict) and tool.get("name")
+        ]
+    mapped_choice = map_tool_choice(body.get("tool_choice"), body.get("tools"))
+    if mapped_choice is not None:
+        out["tool_choice"] = mapped_choice
+    if body.get("stop_sequences"):
+        out["stop"] = body["stop_sequences"]
+    if body.get("top_p") is not None:
+        out["top_p"] = body["top_p"]
+    return out
+
+
+def openai_to_anthropic(body, model_id, default_id="msg_proxy"):
+    """Translate an OpenAI Chat Completions response to Anthropic Messages."""
+    choice = (body.get("choices") or [{}])[0]
+    message = choice.get("message", {})
+    blocks = []
+    if message.get("content"):
+        blocks.append({"type": "text", "text": message["content"]})
+    for tool_call in message.get("tool_calls") or []:
+        function = tool_call.get("function", {})
+        try:
+            arguments = json.loads(function.get("arguments") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            arguments = {}
+        blocks.append({
+            "type": "tool_use",
+            "id": tool_call.get("id"),
+            "name": function.get("name"),
+            "input": arguments,
+        })
+    stop_reason = {
+        "stop": "end_turn",
+        "length": "max_tokens",
+        "tool_calls": "tool_use",
+    }.get(choice.get("finish_reason"), "end_turn")
+    usage = body.get("usage", {})
+    return {
+        "id": body.get("id", default_id),
+        "type": "message",
+        "role": "assistant",
+        "model": model_id,
+        "content": blocks or [{"type": "text", "text": ""}],
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
+    }
+
+
+def map_responses_tool_choice(tool_choice, tools):
+    """Translate Anthropic tool_choice into a broadly compatible Responses value."""
+    if isinstance(tool_choice, str):
+        choice_type = tool_choice
+    elif isinstance(tool_choice, dict):
+        choice_type = tool_choice.get("type")
+    else:
+        choice_type = None
+    if choice_type == "auto":
+        return "auto"
+    if choice_type == "none":
+        return "none"
+    if tools:
+        # Some Responses-compatible providers reject required or named choices.
+        return "auto"
+    return None
+
+
+def normalize_responses_tool_parameters(schema):
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+    out = dict(schema)
+    if "properties" in out and not out.get("type"):
+        out["type"] = "object"
+    if out.get("type") != "object":
+        return {"type": "object", "properties": {}}
+    if not isinstance(out.get("properties"), dict):
+        out["properties"] = {}
+    return out
+
+
+def _responses_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            item.get("text", "")
+            for item in value
+            if isinstance(item, dict)
+        )
+    if value is None:
+        return ""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def anthropic_to_openai_responses(
+    body,
+    target_model,
+    max_output_tokens=None,
+    omit_tool_names=(),
+):
+    """Translate an Anthropic Messages request to the OpenAI Responses shape."""
+    system_prompt = body.get("system")
+    if isinstance(system_prompt, list):
+        system_prompt = "\n".join(
+            block.get("text", "")
+            for block in system_prompt
+            if isinstance(block, dict)
+        )
+
+    items = []
+    for message in body.get("messages", []):
+        role = message.get("role")
+        content = message.get("content")
+        if isinstance(content, str):
+            items.append({"role": role, "content": content})
+            continue
+
+        text_parts = []
+        for block in content or []:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                text_parts.append(block.get("text", ""))
+            elif block_type == "tool_use":
+                if text_parts:
+                    items.append({"role": role, "content": "".join(text_parts)})
+                    text_parts = []
+                items.append({
+                    "type": "function_call",
+                    "call_id": block.get("id"),
+                    "name": block.get("name"),
+                    "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
+                })
+            elif block_type == "tool_result":
+                if text_parts:
+                    items.append({"role": role, "content": "".join(text_parts)})
+                    text_parts = []
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": block.get("tool_use_id"),
+                    "output": _responses_text(block.get("content")),
+                })
+        if text_parts:
+            items.append({"role": role, "content": "".join(text_parts)})
+
+    out = {"model": target_model, "input": items, "stream": False}
+    if system_prompt:
+        out["instructions"] = system_prompt
+    if max_output_tokens:
+        out["max_output_tokens"] = max_output_tokens
+    if body.get("temperature") is not None:
+        out["temperature"] = body["temperature"]
+    if body.get("top_p") is not None:
+        out["top_p"] = body["top_p"]
+
+    omitted = set(omit_tool_names or ())
+    tools = [
+        {
+            "type": "function",
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": normalize_responses_tool_parameters(tool.get("input_schema", {})),
+        }
+        for tool in body.get("tools") or []
+        if isinstance(tool, dict) and tool.get("name") and tool.get("name") not in omitted
+    ]
+    if tools:
+        out["tools"] = tools
+    mapped_choice = map_responses_tool_choice(body.get("tool_choice"), tools)
+    if mapped_choice is not None:
+        out["tool_choice"] = mapped_choice
+    return out
+
+
+def openai_responses_to_anthropic(body, model_id, default_id="msg_proxy"):
+    """Translate an OpenAI Responses result to Anthropic Messages."""
+    blocks = []
+    for item in body.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "message":
+            text = "".join(
+                content.get("text", "")
+                for content in item.get("content") or []
+                if isinstance(content, dict) and content.get("type") in ("output_text", "text")
+            )
+            if text:
+                blocks.append({"type": "text", "text": text})
+        elif item_type == "function_call":
+            try:
+                arguments = json.loads(item.get("arguments") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                arguments = {}
+            blocks.append({
+                "type": "tool_use",
+                "id": item.get("call_id") or item.get("id"),
+                "name": item.get("name"),
+                "input": arguments,
+            })
+    if not blocks and body.get("output_text"):
+        blocks.append({"type": "text", "text": body.get("output_text", "")})
+
+    usage = body.get("usage", {})
+    stop_reason = "tool_use" if any(block.get("type") == "tool_use" for block in blocks) else "end_turn"
+    if body.get("status") == "incomplete":
+        stop_reason = "max_tokens"
+    return {
+        "id": body.get("id", default_id),
+        "type": "message",
+        "role": "assistant",
+        "model": model_id,
+        "content": blocks or [{"type": "text", "text": ""}],
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+        },
+    }
+
+
 @dataclass
 class Ctx:
     """transform_request 产出、传给 rewrite_nonstream / make_stream_rewriter 的请求级上下文。"""
