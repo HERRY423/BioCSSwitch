@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
   CAP,
+  classifyWorkflowPackResult,
   isNativeAdapter,
   modelCapability,
   openaiCustomAnthropicBaseMessage,
   sourceHint,
+  workflowLaunchBlocker,
 } from "./ui-logic.js";
 
 describe("model capability policy", () => {
@@ -77,5 +79,48 @@ describe("custom endpoint validation", () => {
       { id: "custom" },
       "https://api.example.test/anthropic",
     )).toBe("");
+  });
+});
+
+describe("research workflow launch gate", () => {
+  test("blocks task assembly while official Claude mode is active", () => {
+    expect(workflowLaunchBlocker("official", "profile-1")).toBe("official-mode");
+  });
+
+  test("requires an active research engine in proxy mode", () => {
+    expect(workflowLaunchBlocker("proxy", "")).toBe("missing-profile");
+  });
+
+  test("allows a configured proxy workflow", () => {
+    expect(workflowLaunchBlocker("proxy", "profile-1")).toBe("");
+  });
+});
+
+describe("research workflow pack readiness", () => {
+  test("reports requested packs that were not applied", () => {
+    expect(classifyWorkflowPackResult(
+      ["bio-workflows", "bio-audit"],
+      ["bio-audit"],
+      [],
+    ).missing).toEqual(["bio-workflows"]);
+  });
+
+  test("treats missing environment and install failures as blocking", () => {
+    const result = classifyWorkflowPackResult(
+      ["bio-crossmodal"],
+      ["bio-crossmodal"],
+      ["bio-drug 已勾选，但缺必填环境变量 CHEMBL_KEY，未装配", "bio-crossmodal: Skill 装配失败：disk full"],
+    );
+    expect(result.blockingWarnings).toHaveLength(2);
+  });
+
+  test("keeps non-blocking alias warnings visible without blocking launch", () => {
+    const result = classifyWorkflowPackResult(
+      ["bio-audit"],
+      ["bio-audit"],
+      ["bio-audit: 别名 pubmed 与既有 MCP 冲突，跳过"],
+    );
+    expect(result.blockingWarnings).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
   });
 });

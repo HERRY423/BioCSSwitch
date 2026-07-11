@@ -1,6 +1,6 @@
-# CSSwitch 桌面 app（Tauri）
+# BioCSSwitch 桌面研究工作台（Tauri）
 
-macOS 桌面 app（正常窗口，非菜单栏），把 CSSwitch 的日常操作收进一个面板：第三方 / 官方模式切换、选 provider、填第三方 key、一键开始、起停代理与沙箱、三盏状态灯。
+macOS 桌面 app（正常窗口，非菜单栏），以研究意图为入口，把文献综述、单细胞分析、实验设计和跨模态靶点发现编排进一个本地优先、证据可审计的工作台。模型连接、科研工具包、隐私边界与运行诊断仍在同一应用内管理，但不再作为首页的产品中心。
 
 架构上它只是**进程管家**：Rust 后端负责起停子进程、注入环境变量、读写配置、探活。虚拟 OAuth 伪造已在 v0.1.4 移进 Rust 原生实现（`src/oauth_forge.rs`，app 运行时不再需要 node）；翻译逻辑仍在 `proxy/csswitch_proxy.py` 作子进程调用（下一步移 axum 拔 python），沙箱启动仍走 `scripts/launch-virtual-sandbox.sh`，以保住铁律护栏与已验证行为。
 
@@ -15,7 +15,7 @@ desktop/
     src/oauth_forge.rs    虚拟 OAuth 伪造（Rust 原生：HKDF-SHA256 + AES-256-GCM v2 令牌；护栏拒真实目录）
     src/config.rs         ~/.csswitch/config.json 读写（0700/0600、拒符号链接、原子写、掩码）
     src/proc.rs           探活 / which（含登录 shell 兜底）/ 一次性 secret / 上游可达性（纯 std）
-    tauri.conf.json       正常窗口（有标题栏三键、启动居中、可缩放，min 320×520）
+    tauri.conf.json       研究工作台窗口（默认 1180×780，最小 760×620，可缩放）
     Cargo.toml            tauri + serde + aes-gcm/hkdf/sha2/base64（伪造器用）
 ```
 
@@ -35,7 +35,7 @@ npm install
 npm run tauri dev
 ```
 
-CSSwitch 以正常窗口打开面板（420×700，已去托盘/菜单栏）。
+BioCSSwitch 以 1180×780 的研究工作台窗口启动（已去托盘/菜单栏），窄窗口下自动折叠为紧凑布局。
 
 后端定位 `proxy/` 与 `scripts/` 的顺序（`asset_root()`）：**① 打包后**优先用 Tauri 资源目录
 （`Contents/Resources/`，见下「构建」——`proxy/`、`scripts/` 已被 bundle 进去）；**② 开发态**回退到

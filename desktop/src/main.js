@@ -1,9 +1,11 @@
 import {
   CAP,
+  classifyWorkflowPackResult,
   isNativeAdapter,
   modelCapability,
   openaiCustomAnthropicBaseMessage,
   sourceHint,
+  workflowLaunchBlocker,
 } from "./ui-logic.js";
 
 // BioCSSwitch 桌面面板前端。只调用后端 Tauri command，绝不碰任何密钥落盘逻辑。
@@ -45,6 +47,7 @@ const mockStore = {
   sandbox_port: 8990,
   mode: "proxy",
   agent_mode: "normal",
+  enabled_packs: {},
   profiles: [
     { id: "p-demo1", name: "我的 GLM", template_id: "glm", category: "cn_official", api_format: "anthropic", base_url: "https://open.bigmodel.cn/api/anthropic", model: "glm-4.6", key: "••••••1234", icon: "glm", icon_color: "#2E6BE6", website_url: "https://open.bigmodel.cn", sort_index: 1, notes: "" },
   ],
@@ -144,11 +147,17 @@ function mockInvoke(cmd, args) {
           { id: "bio-research-partner", name: "主动研究伙伴", description: "本地 HMAC 兴趣模型 / 主动简报 / 工作流预测 / 可删除", optional_env: [{ name: "BIOCSSWITCH_INTEREST_PROFILE_PATH", label: "本地研究画像路径（可选）" }], requires_env: [], dependencies: ["bio-lit", "bio-trials", "bio-kg", "bio-privacy"], depends_on: ["bio-lit", "bio-trials", "bio-kg", "bio-privacy"], requires_tools: [] },
           { id: "bio-crossmodal", name: "跨模态生物医学发现", description: "文献 / 基因 / 药物 / 试验 / 单细胞 / 空间证据统一编排", optional_env: [], requires_env: [], dependencies: ["bio-lit", "bio-audit", "bio-gene", "bio-drug", "bio-trials", "bio-singlecell", "bio-sc-downstream", "bio-spatial", "bio-kg"], requires_tools: [] },
         ],
-        enabled: {}, env_set: {}, mode: "proxy",
+        enabled: { ...mockStore.enabled_packs }, env_set: {}, mode: mockStore.mode,
         sensitive_mode: false, local_endpoint_hosts: [], current_upstream_host: "api.deepseek.com",
       });
     case "toggle_pack":
-      return Promise.resolve({ ok: true, applied: [args.id], warnings: [], sandbox_restarted: false });
+      mockStore.enabled_packs[args.id] = !!args.enabled;
+      return Promise.resolve({
+        ok: true,
+        applied: Object.entries(mockStore.enabled_packs).filter(([, on]) => on).map(([id]) => id),
+        warnings: [],
+        sandbox_restarted: false,
+      });
     case "set_pack_env":
       return Promise.resolve({ ok: true, set: !!(args && args.value) });
     case "set_sensitive_mode":
@@ -267,8 +276,15 @@ function setMsg(text, kind) {
 }
 
 function setLight(el, s) {
+  if (!el) return;
   const cls = { green: "g", amber: "a", red: "r" }[s] || "a";
   el.className = "lt " + cls;
+  el.dataset.state = s || "amber";
+}
+
+function setRuntimeText(el, s) {
+  if (!el) return;
+  el.textContent = ({ green: "在线", amber: "待命", red: "异常" })[s] || "未知";
 }
 
 function setBusy(on) {
@@ -279,8 +295,9 @@ function setBusy(on) {
     els.connSaveBtn, els.connFetchBtn, els.connClearBtn, els.connCancelBtn,
     els.metaSaveBtn, els.metaCancelBtn, els.skipActivateBtn,
     // 端口输入也纳入忙碌禁用：忙碌中改端口会与在途操作竞态（修 P1-c 前端侧）。
-    els.proxyPort, els.sandboxPort,
+    els.proxyPort, els.sandboxPort, els.settingsBtn,
   ].forEach((b) => b && (b.disabled = on));
+  document.querySelectorAll("[data-workflow]").forEach((b) => (b.disabled = on));
   // 模式切换按钮同样禁用：忙碌中切官方会与「一键开始」竞态（修 P1-b 前端侧）。
   if (els.modeSeg) els.modeSeg.querySelectorAll(".seg-btn").forEach((b) => (b.disabled = on));
   // 松开忙碌时，把 requires_model_override 的保存门控交回门（避免 setBusy(false) 覆盖门控）。
@@ -453,6 +470,7 @@ function applyMode(m) {
   );
   els.oneClickBtn.textContent =
     mode === "official" ? "打开官方 Claude Science ↗" : "⚡ 一键开始";
+  syncResearchContext();
 }
 
 async function switchMode(m) {
@@ -1018,9 +1036,14 @@ async function refreshStatus() {
     setLight(els.ltProxy, s.proxy);
     setLight(els.ltSandbox, s.sandbox);
     setLight(els.ltUpstream, s.upstream);
+    setRuntimeText(els.proxyStateText, s.proxy);
+    setRuntimeText(els.sandboxStateText, s.sandbox);
+    setRuntimeText(els.upstreamStateText, s.upstream);
     els.brandDot.className = "dot" + (s.proxy === "green" ? "" : " amber");
   } catch (e) {
     [els.ltProxy, els.ltSandbox, els.ltUpstream].forEach((l) => setLight(l, "amber"));
+    [els.proxyStateText, els.sandboxStateText, els.upstreamStateText]
+      .forEach((el) => setRuntimeText(el, "amber"));
   }
 }
 
@@ -1029,45 +1052,116 @@ function setResearchStatus(text, kind) {
   if (!el) return;
   el.textContent = text || "";
   el.className = "research-status" + (kind ? " " + kind : "");
+  const consoleEl = el.closest(".launch-console");
+  if (consoleEl) {
+    consoleEl.classList.toggle("is-error", kind === "err");
+    consoleEl.classList.toggle("is-ready", kind === "ok");
+    consoleEl.classList.toggle("is-warning", kind === "warn");
+  }
+}
+
+function syncResearchContext() {
+  const active = (state.profiles || []).find((p) => p.id === state.active_id);
+  if (els.activeProfileLabel) {
+    els.activeProfileLabel.textContent = mode === "official"
+      ? "官方 Claude"
+      : (active && active.name) || "未连接";
+    els.activeProfileLabel.title = mode === "official"
+      ? ""
+      : (active && active.name) || "";
+  }
+  if (els.packStateLabel) {
+    if (mode === "official") {
+      els.packStateLabel.textContent = "官方模式不装配";
+    } else {
+      const enabled = _packState && _packState.enabled
+        ? Object.values(_packState.enabled).filter(Boolean).length
+        : 0;
+      els.packStateLabel.textContent = enabled ? `${enabled} 个工具包` : "按任务加载";
+    }
+  }
+  if (els.privacyStateLabel) {
+    els.privacyStateLabel.textContent = mode === "official"
+      ? "由官方应用管理"
+      : (_packState && _packState.sensitive_mode ? "敏感模式" : "标准模式");
+  }
 }
 
 function showSettings() {
   if (els.researchHome) els.researchHome.hidden = true;
   if (els.settingsPage) els.settingsPage.hidden = false;
+  if (els.panel) els.panel.classList.add("settings-open");
+  if (els.settingsHeading) els.settingsHeading.focus();
 }
 
 function showResearchHome() {
   showView("list");
   if (els.settingsPage) els.settingsPage.hidden = true;
   if (els.researchHome) els.researchHome.hidden = false;
+  if (els.panel) els.panel.classList.remove("settings-open");
+  const heading = document.getElementById("researchHeading");
+  if (heading) heading.focus();
 }
 
 async function launchWorkflow(button) {
   const task = button.dataset.workflow;
   const packs = (button.dataset.packs || "").split(",").filter(Boolean);
-  if (!state.active_id) {
-    setResearchStatus("先在“设置”中添加并激活一个模型连接；完成后即可一键启动工作流。", "err");
-    showSettings();
+  const title = button.querySelector(".workflow-title").textContent;
+  const blocker = workflowLaunchBlocker(mode, state.active_id);
+  if (blocker === "official-mode") {
+    setResearchStatus("当前为官方 Claude 模式。请在“连接与设置”中打开官方 Science，或切回第三方模式后装配研究工作流。", "err");
+    els.settingsBtn.focus();
     return;
   }
-  const cards = [...document.querySelectorAll("[data-workflow]")];
-  cards.forEach((card) => (card.disabled = true));
-  setResearchStatus("正在准备研究工具与证据规则…");
+  if (blocker === "missing-profile") {
+    setResearchStatus("尚未连接研究引擎。请先打开左侧“连接与设置”，添加并激活一个模型连接。", "err");
+    els.settingsBtn.focus();
+    return;
+  }
+  setBusy(true);
+  button.classList.add("is-launching");
+  button.setAttribute("aria-busy", "true");
+  setResearchStatus(`01 / 03 · 正在为“${title}”确认任务路由…`);
   try {
     await call("set_task_route", { task, profileId: state.active_id });
+    setResearchStatus(`02 / 03 · 正在装配 ${packs.length} 组专业工具与证据规则…`);
+    const packWarnings = [];
+    let appliedPacks = new Set();
     for (const id of packs) {
-      if (!(_packState && _packState.enabled && _packState.enabled[id])) {
-        await call("toggle_pack", { id, enabled: true });
-      }
+      // 即使已勾选也重新装配：Science 只在启动时读取配置，工作流入口必须验证
+      // 这一次的工具链确实落盘，而不是把历史勾选状态误报成“已就绪”。
+      const result = await call("toggle_pack", { id, enabled: true });
+      (result.warnings || []).forEach((warning) => packWarnings.push(String(warning)));
+      appliedPacks = new Set(result.applied || []);
     }
     await loadPacks();
+    const packResult = classifyWorkflowPackResult(
+      packs,
+      [...appliedPacks],
+      packWarnings,
+    );
+    if (packResult.missing.length || packResult.blockingWarnings.length) {
+      const details = [...new Set([
+        ...(packResult.missing.length ? [`未装配：${packResult.missing.join(", ")}`] : []),
+        ...packResult.blockingWarnings,
+      ])];
+      throw new Error("关键研究工具未完整装配。" + details.join("；"));
+    }
+    setResearchStatus("03 / 03 · 工具装配完成，正在打开隔离研究工作区…");
     const r = await call("one_click_login");
-    setResearchStatus(`${button.querySelector(".workflow-title").textContent}已就绪。${r.msg || "研究工作区已打开。"}`, "ok");
+    const nonBlockingWarnings = packResult.warnings;
+    if (nonBlockingWarnings.length) {
+      setResearchStatus(`${title}已打开，但工具装配有提示：${nonBlockingWarnings.join("；")}`, "warn");
+    } else {
+      setResearchStatus(`${title}已就绪。${r.msg || "研究工作区已打开。"}`, "ok");
+    }
     await refreshStatus();
   } catch (e) {
-    setResearchStatus("启动失败：" + e, "err");
+    setResearchStatus("准备中断；已完成的任务路由或工具包设置可能保留，可重试或进入设置检查。原因：" + e, "err");
   } finally {
-    cards.forEach((card) => (card.disabled = false));
+    button.classList.remove("is-launching");
+    button.removeAttribute("aria-busy");
+    setBusy(false);
   }
 }
 
@@ -1075,7 +1169,8 @@ function wire() {
   [
     "oneClickBtn", "stopBtn", "ltProxy", "ltSandbox", "ltUpstream",
     "msg", "brandDot", "openBrowserBtn", "doctorBtn", "updateBtn", "verLabel",
-    "reportBtn", "logsBtn", "quitBtn", "settingsBtn", "homeBtn", "researchHome", "settingsPage", "researchStatus", "modeSeg", "proxyPort", "sandboxPort", "advSec",
+    "reportBtn", "logsBtn", "quitBtn", "settingsBtn", "homeBtn", "researchHome", "settingsPage", "settingsHeading", "researchStatus", "modeSeg", "proxyPort", "sandboxPort", "advSec",
+    "proxyStateText", "sandboxStateText", "upstreamStateText", "activeProfileLabel", "packStateLabel", "privacyStateLabel",
     "listSec", "profileList", "newBtn", "skipActivateBtn",
     "wizSec", "wizTemplate", "wizTemplateChips", "wizTplLabel", "wizTplHint", "wizName", "wizBase", "wizBaseHint",
     "wizFetchBtn", "wizModelInfo", "wizModel", "wizModelHint", "wizKey", "wizSaveBtn", "wizCancelBtn",
@@ -1289,6 +1384,7 @@ function renderPacks() {
       const inp = envList.querySelector(`input[data-env="${CSS.escape(name)}"]`);
       savePackEnv(name, inp ? inp.value : "");
     }));
+  syncResearchContext();
 }
 
 async function togglePack(id, enabled, cb) {
@@ -1334,6 +1430,7 @@ function renderPrivacy() {
   if (upHost) upHost.textContent = _packState.current_upstream_host || "—";
   const bioPrivacyOn = !!(_packState.enabled || {})["bio-privacy"];
   if (chip) chip.style.display = (_packState.sensitive_mode && !bioPrivacyOn) ? "" : "none";
+  syncResearchContext();
 }
 
 async function setSensitiveMode(enabled) {

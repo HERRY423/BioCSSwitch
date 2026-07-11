@@ -62,3 +62,20 @@ export function openaiCustomAnthropicBaseMessage(template, base) {
   }
   return "";
 }
+
+export function workflowLaunchBlocker(mode, activeId) {
+  if (mode === "official") return "official-mode";
+  if (!String(activeId || "").trim()) return "missing-profile";
+  return "";
+}
+
+export function classifyWorkflowPackResult(requested, applied, warnings) {
+  const appliedSet = new Set(applied || []);
+  const uniqueWarnings = [...new Set((warnings || []).map((warning) => String(warning)))];
+  return {
+    missing: (requested || []).filter((id) => !appliedSet.has(id)),
+    blockingWarnings: uniqueWarnings.filter((warning) =>
+      /未装配|装配失败|缺必填/.test(warning)),
+    warnings: uniqueWarnings,
+  };
+}

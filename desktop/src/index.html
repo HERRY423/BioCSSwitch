@@ -3,50 +3,151 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>BioCSSwitch</title>
-    <link rel="stylesheet" href="/styles.css" />
-    <script type="module" src="/main.js" defer></script>
+    <meta name="theme-color" content="#07130f" />
+    <meta name="description" content="BioCSSwitch 本地优先、证据可审计的生物医学研究工作台" />
+    <title>BioCSSwitch · 可审计生物医学研究工作台</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./main.js" defer></script>
   </head>
   <body>
     <div class="panel">
-      <div class="hd" data-tauri-drag-region>
-        <div class="brand" data-tauri-drag-region><span id="brandDot" class="dot amber"></span>BioCSSwitch</div>
-        <div class="header-actions">
-          <button class="linkbtn gear" id="settingsBtn" type="button">设置</button>
-          <button class="linkbtn gear" id="quitBtn" type="button" title="退出 BioCSSwitch">退出</button>
+      <aside class="app-rail" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <span class="brand-mark" aria-hidden="true"><span id="brandDot" class="dot amber"></span></span>
+          <span class="brand-copy">
+            <strong>BioCS<span>Switch</span></strong>
+            <small>RESEARCH OPERATING SYSTEM</small>
+          </span>
         </div>
-      </div>
+
+        <div class="rail-context">
+          <div class="rail-label"><span>LOCAL SANDBOX</span><span class="rail-secure">本地隔离</span></div>
+          <div class="runtime-status" aria-label="研究运行时状态">
+            <div class="runtime-row">
+              <span id="ltProxy" class="lt a" aria-hidden="true"></span>
+              <span>模型代理</span>
+              <span id="proxyStateText" class="runtime-value">检查中</span>
+            </div>
+            <div class="runtime-row">
+              <span id="ltSandbox" class="lt a" aria-hidden="true"></span>
+              <span>研究沙箱</span>
+              <span id="sandboxStateText" class="runtime-value">检查中</span>
+            </div>
+            <div class="runtime-row">
+              <span id="ltUpstream" class="lt a" aria-hidden="true"></span>
+              <span>模型上游</span>
+              <span id="upstreamStateText" class="runtime-value">检查中</span>
+            </div>
+          </div>
+
+          <div class="rail-metadata">
+            <div><span>研究引擎</span><strong id="activeProfileLabel">未连接</strong></div>
+            <div><span>工具装配</span><strong id="packStateLabel">按任务加载</strong></div>
+            <div><span>数据边界</span><strong id="privacyStateLabel">标准模式</strong></div>
+          </div>
+
+          <div class="rail-principles" aria-label="平台研究原则">
+            <span><i class="principle-node anchored"></i>来源可追溯</span>
+            <span><i class="principle-node conflict"></i>冲突不隐藏</span>
+            <span><i class="principle-node unknown"></i>不确定性保留</span>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <button class="rail-action" id="settingsBtn" type="button">
+            <span class="rail-action-icon" aria-hidden="true">⌘</span>
+            <span><strong>连接与设置</strong><small>模型 · 工具 · 隐私</small></span>
+            <span aria-hidden="true">›</span>
+          </button>
+          <button class="rail-action rail-action-quiet" id="quitBtn" type="button" title="退出 BioCSSwitch；研究沙箱会继续运行">
+            <span class="rail-action-icon" aria-hidden="true">↗</span>
+            <span><strong>退出应用</strong><small>保留研究沙箱</small></span>
+          </button>
+        </div>
+      </aside>
+
+      <div class="app-stage">
 
       <main class="research-home" id="researchHome" aria-labelledby="researchHeading">
-        <div class="research-hero">
-          <p class="eyebrow">AI BIOMEDICAL RESEARCH PLATFORM</p>
-          <h1 id="researchHeading">从问题到可审计证据</h1>
-          <p>选择研究任务。BioCSSwitch 会准备相应的本地工具、证据规则和研究工作区。</p>
-        </div>
-        <section class="workflow-grid" aria-label="研究工作流">
-          <button class="workflow-card" type="button" data-workflow="lit-review" data-packs="bio-workflows,bio-audit">
-            <span class="workflow-icon">⌕</span><span class="workflow-title">我要做文献综述</span>
-            <span class="workflow-copy">检索、证据审计与 GRADE/SoF 汇总</span><span class="workflow-arrow">启动 →</span>
-          </button>
-          <button class="workflow-card" type="button" data-workflow="omics-code" data-packs="bio-singlecell,bio-sc-downstream,bio-scfm">
-            <span class="workflow-icon">◌</span><span class="workflow-title">我要分析单细胞数据</span>
-            <span class="workflow-copy">QC、注释、差异分析与可复现 recipe</span><span class="workflow-arrow">启动 →</span>
-          </button>
-          <button class="workflow-card" type="button" data-workflow="experimental-design" data-packs="bio-experiment">
-            <span class="workflow-icon">⌁</span><span class="workflow-title">我要设计实验方案</span>
-            <span class="workflow-copy">反证、区分性实验与关键数据需求</span><span class="workflow-arrow">启动 →</span>
-          </button>
-          <button class="workflow-card" type="button" data-workflow="crossmodal-discovery" data-packs="bio-crossmodal">
-            <span class="workflow-icon">◈</span><span class="workflow-title">我要发现和排序靶点</span>
-            <span class="workflow-copy">整合文献、组学、药物与临床试验信号</span><span class="workflow-arrow">启动 →</span>
-          </button>
+        <section class="research-hero">
+          <div class="hero-copy">
+            <div class="eyebrow-row">
+              <p class="eyebrow">BIOMEDICAL EVIDENCE OS</p>
+              <span class="release-chip">LOCAL-FIRST · AUDITABLE</span>
+            </div>
+            <h1 id="researchHeading" tabindex="-1">把研究问题，<span>编译成可审计证据。</span></h1>
+            <p>选择研究意图。BioCSSwitch 会在本地装配模型路由、专业工具与证据规则，再打开隔离的研究工作区。</p>
+            <div class="hero-principles" aria-label="工作流阶段">
+              <span><b>01</b> 定义意图</span>
+              <i aria-hidden="true"></i>
+              <span><b>02</b> 装配工具</span>
+              <i aria-hidden="true"></i>
+              <span><b>03</b> 审计证据</span>
+            </div>
+          </div>
+
+          <div class="evidence-lattice" aria-hidden="true">
+            <div class="lattice-orbit orbit-one"></div>
+            <div class="lattice-orbit orbit-two"></div>
+            <div class="lattice-core"><small>EVIDENCE</small><strong>可审计</strong><span>research core</span></div>
+            <span class="lattice-node node-source"><i></i>来源</span>
+            <span class="lattice-node node-claim"><i></i>声明</span>
+            <span class="lattice-node node-grade"><i></i>分级</span>
+            <span class="lattice-node node-uncertainty"><i></i>不确定性</span>
+          </div>
         </section>
-        <div class="research-status" id="researchStatus" role="status" aria-live="polite">模型连接与高级配置位于“设置”。</div>
-        <p class="research-note">所有研究输出均应由研究者复核；平台将证据来源、冲突与不确定性显式呈现。</p>
+
+        <section class="workflow-section" aria-labelledby="workflowHeading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">SELECT A RESEARCH TRAJECTORY</p>
+              <h2 id="workflowHeading">选择研究轨道</h2>
+            </div>
+            <span>4 条核心路径 · 工具按需装配</span>
+          </div>
+
+          <div class="workflow-grid" aria-label="研究工作流">
+          <button class="workflow-card workflow-review" type="button" data-workflow="lit-review" data-packs="bio-workflows,bio-audit" aria-labelledby="workflowReviewTitle" aria-describedby="workflowReviewCopy">
+            <span class="workflow-card-top"><span class="workflow-index">01</span><span class="workflow-domain">EVIDENCE SYNTHESIS</span><span class="workflow-glyph" aria-hidden="true"><i></i><i></i><i></i></span></span>
+            <span class="workflow-title" id="workflowReviewTitle">文献证据综述</span>
+            <span class="workflow-copy" id="workflowReviewCopy">从多源检索、声明级核验，到 GRADE / SoF 与不确定性台账。</span>
+            <span class="workflow-path" aria-hidden="true"><span>检索</span><i></i><span>核验</span><i></i><span>分级</span></span>
+            <span class="workflow-footer"><span>预期产物 · Evidence Matrix</span><span class="workflow-arrow">构建证据链 <b>↗</b></span></span>
+          </button>
+          <button class="workflow-card workflow-singlecell" type="button" data-workflow="omics-code" data-packs="bio-singlecell,bio-sc-downstream,bio-scfm" aria-labelledby="workflowSinglecellTitle" aria-describedby="workflowSinglecellCopy">
+            <span class="workflow-card-top"><span class="workflow-index">02</span><span class="workflow-domain">CELL STATE MAP</span><span class="workflow-glyph" aria-hidden="true"><i></i><i></i><i></i></span></span>
+            <span class="workflow-title" id="workflowSinglecellTitle">单细胞数据解析</span>
+            <span class="workflow-copy" id="workflowSinglecellCopy">从数据指纹与 QC，到注释、差异分析和可复现分析 recipe。</span>
+            <span class="workflow-path" aria-hidden="true"><span>QC</span><i></i><span>注释</span><i></i><span>复现</span></span>
+            <span class="workflow-footer"><span>预期产物 · Provenance Recipe</span><span class="workflow-arrow">解析细胞状态 <b>↗</b></span></span>
+          </button>
+          <button class="workflow-card workflow-experiment" type="button" data-workflow="experimental-design" data-packs="bio-experiment" aria-labelledby="workflowExperimentTitle" aria-describedby="workflowExperimentCopy">
+            <span class="workflow-card-top"><span class="workflow-index">03</span><span class="workflow-domain">HYPOTHESIS ENGINE</span><span class="workflow-glyph" aria-hidden="true"><i></i><i></i><i></i></span></span>
+            <span class="workflow-title" id="workflowExperimentTitle">可证伪实验设计</span>
+            <span class="workflow-copy" id="workflowExperimentCopy">从竞争假设出发，生成对照、区分性实验与关键数据需求。</span>
+            <span class="workflow-path" aria-hidden="true"><span>假设</span><i></i><span>反证</span><i></i><span>实验</span></span>
+            <span class="workflow-footer"><span>预期产物 · Discriminating Test</span><span class="workflow-arrow">设计验证路径 <b>↗</b></span></span>
+          </button>
+          <button class="workflow-card workflow-discovery" type="button" data-workflow="crossmodal-discovery" data-packs="bio-crossmodal" aria-labelledby="workflowDiscoveryTitle" aria-describedby="workflowDiscoveryCopy">
+            <span class="workflow-card-top"><span class="workflow-index">04</span><span class="workflow-domain">CROSS-MODAL DISCOVERY</span><span class="workflow-glyph" aria-hidden="true"><i></i><i></i><i></i></span></span>
+            <span class="workflow-title" id="workflowDiscoveryTitle">跨模态靶点发现</span>
+            <span class="workflow-copy" id="workflowDiscoveryCopy">统一编排文献、组学、药物、试验、单细胞与空间证据。</span>
+            <span class="workflow-path" aria-hidden="true"><span>整合</span><i></i><span>冲突</span><i></i><span>排序</span></span>
+            <span class="workflow-footer"><span>预期产物 · EvidenceContext</span><span class="workflow-arrow">发现关键靶点 <b>↗</b></span></span>
+          </button>
+          </div>
+        </section>
+
+        <div class="launch-console" aria-label="研究工作流准备状态">
+          <div class="console-heading"><span class="console-pulse" aria-hidden="true"></span><span>RESEARCH PREFLIGHT</span></div>
+          <div class="research-status" id="researchStatus" role="status" aria-live="polite">选择一条研究轨道；模型连接与高级配置由左侧“连接与设置”管理。</div>
+          <div class="console-stages" aria-hidden="true"><span>ROUTE</span><i></i><span>PACKS</span><i></i><span>SCIENCE</span></div>
+        </div>
+        <p class="research-note"><span>研究完整性声明</span> AI 输出不是研究结论。BioCSSwitch 显式保留来源、冲突与不确定性，最终判断始终由研究者复核。</p>
       </main>
 
-      <div id="settingsPage" hidden>
-      <div class="settings-title"><button class="linkbtn back-btn" id="homeBtn" type="button">← 研究工作台</button><span>连接与设置</span></div>
+      <div id="settingsPage" role="main" aria-labelledby="settingsHeading" hidden>
+      <div class="settings-title"><button class="linkbtn back-btn" id="homeBtn" type="button">← 研究工作台</button><h2 id="settingsHeading" tabindex="-1">连接与设置</h2></div>
       <div class="sec modeseg">
         <div class="seg" id="modeSeg">
           <button type="button" class="seg-btn active" data-mode="proxy">第三方模型</button>
@@ -216,11 +317,6 @@ ollama.local"></textarea>
         <div class="subbtns">
           <button class="btn" id="stopBtn">全部停止</button>
         </div>
-        <div class="status tp-only" style="margin-top:10px">
-          <div class="st"><span id="ltProxy" class="lt a"></span>代理</div>
-          <div class="st"><span id="ltSandbox" class="lt a"></span>沙箱</div>
-          <div class="st"><span id="ltUpstream" class="lt a"></span>上游</div>
-        </div>
       </div>
 
       <div class="foot list-only">
@@ -230,6 +326,7 @@ ollama.local"></textarea>
       <div class="foot foot2 list-only">
         <span><button type="button" class="link linkbtn" id="doctorBtn">自检</button> · <button type="button" class="link linkbtn" id="logsBtn">日志</button></span>
         <span><button type="button" class="link linkbtn" id="updateBtn">检查更新</button> · <span id="verLabel"></span></span>
+      </div>
       </div>
       </div>
     </div>
