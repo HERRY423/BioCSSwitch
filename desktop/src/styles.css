@@ -161,6 +161,64 @@ button{color:inherit}
 .console-stages i{width:13px;border-top:1px dashed #40544c}
 .research-note{margin:14px 2px 0;color:#768a83;font-size:10px;line-height:1.6}
 .research-note span{margin-right:6px;color:#8ca098;font-weight:650}
+
+/* ─────── 研究问题 → 可审计任务书 ─────── */
+.research-intake{
+  width:min(780px,calc(100vw - 32px));max-height:min(88vh,860px);margin:auto;overflow:auto;
+  border:1px solid rgba(184,246,109,.22);border-radius:22px;padding:0;color:var(--ink);
+  background:linear-gradient(145deg,#10211b,#08130f 74%);box-shadow:0 34px 110px rgba(0,0,0,.62);
+}
+.research-intake::backdrop{background:rgba(2,8,6,.76);backdrop-filter:blur(8px)}
+.research-intake[open]{animation:intake-in .18s ease-out}
+@keyframes intake-in{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+.research-intake form{margin:0}
+.intake-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:25px 28px 21px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,rgba(184,246,109,.055),transparent)}
+.intake-header h2{margin:4px 0 3px;font-size:25px;letter-spacing:-.045em}
+.intake-header>div>span{color:#8da198;font-size:11px}
+.intake-kicker{margin:0;color:var(--accent2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:8.5px;letter-spacing:.14em}
+.intake-close{width:34px;height:34px;display:grid;place-items:center;flex:none;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.025);color:#8da097;font-size:21px;line-height:1;cursor:pointer}
+.intake-close:hover{border-color:rgba(255,120,107,.4);color:var(--red)}
+.intake-step{padding:24px 28px 27px}
+.intake-step-heading{display:flex;align-items:flex-start;gap:12px;margin-bottom:22px}
+.intake-step-heading>span{display:grid;place-items:center;width:31px;height:31px;flex:none;border:1px solid rgba(106,226,182,.28);border-radius:9px;background:rgba(106,226,182,.07);color:var(--accent2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
+.intake-step-heading h3{margin:0;font-size:16px;letter-spacing:-.025em}
+.intake-step-heading p{margin:4px 0 0;color:#7f938a;font-size:10.5px}
+.intake-step label{margin:0 0 7px;color:#a9bbb3;font-size:11px}
+.intake-step label strong{margin-left:4px;color:var(--accent);font-size:8px;letter-spacing:.08em}
+.intake-step label span{color:#60756c;font-size:9px}
+.intake-step textarea,.intake-step select{
+  width:100%;border:1px solid var(--line);border-radius:11px;background:#0b1914;color:var(--ink);outline:none;
+  padding:11px 12px;font-size:12px;line-height:1.6;resize:vertical;transition:border-color .15s,box-shadow .15s;
+}
+.intake-step select{height:40px;padding:0 11px;resize:none}
+.intake-step textarea:focus,.intake-step select:focus{border-color:rgba(106,226,182,.46);box-shadow:0 0 0 3px rgba(106,226,182,.055)}
+.intake-step textarea[aria-invalid="true"]{border-color:rgba(255,120,107,.52);box-shadow:0 0 0 3px rgba(255,120,107,.05)}
+.intake-field-meta{display:flex;justify-content:space-between;gap:16px;margin:6px 2px 0;color:#667b72;font-size:9px}
+.intake-split{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.28fr);gap:14px;margin-top:18px}
+.intake-message{min-height:18px;margin-top:13px;color:#8ca097;font-size:10px;line-height:1.5}
+.intake-message.err{color:var(--red)}.intake-message.ok{color:var(--green)}.intake-message.warn{color:var(--amber)}
+.intake-actions{display:flex;align-items:center;justify-content:flex-end;gap:9px;margin-top:15px;padding-top:16px;border-top:1px solid var(--line)}
+.intake-actions .btn{width:auto;min-width:92px}
+.intake-primary{min-width:184px;height:38px;border:1px solid rgba(184,246,109,.5);border-radius:10px;padding:0 16px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#07130f;font-size:11px;font-weight:760;cursor:pointer;box-shadow:0 8px 22px rgba(106,226,182,.13)}
+.intake-primary span{margin-left:8px}.intake-primary:disabled{opacity:.42;cursor:wait;box-shadow:none}
+.brief-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:16px}
+.brief-summary>div{min-width:0;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:rgba(255,255,255,.018)}
+.brief-summary span{display:block;color:#667c73;font-size:8.5px;letter-spacing:.06em}
+.brief-summary strong{display:block;margin-top:4px;overflow:hidden;color:#cbd8d2;font-size:11px;font-weight:620;text-overflow:ellipsis;white-space:nowrap}
+.clarification-list{display:grid;gap:10px}
+.clarification-empty{border:1px solid rgba(98,221,168,.2);border-radius:11px;padding:12px;background:rgba(98,221,168,.045);color:var(--green);font-size:10.5px}
+.clarification-item{border-left:2px solid var(--amber);padding:2px 0 2px 12px}
+.clarification-item label{color:#d1b27f}.clarification-item textarea{min-height:65px}
+.clarification-item small{display:block;margin-top:5px;color:#6f837b;font-size:9px}
+.brief-preview{margin-top:15px;border:1px solid var(--line);border-radius:11px;background:rgba(4,12,9,.5)}
+.brief-preview summary{padding:10px 12px;color:#83978f;font-size:9.5px;cursor:pointer}
+.brief-preview pre{max-height:230px;margin:0;overflow:auto;border-top:1px solid var(--line);padding:12px;color:#91aaa0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.clipboard-note{margin:10px 0 0;color:#667b72;font-size:9px;line-height:1.55;text-align:right}
+
+.pending-intent{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;margin:0 28px 13px;border:1px solid rgba(231,170,85,.28);border-radius:13px;padding:12px 13px;background:linear-gradient(105deg,rgba(231,170,85,.085),rgba(15,29,24,.72))}
+.pending-intent-mark{display:grid;place-items:center;width:31px;height:31px;border:1px solid rgba(231,170,85,.27);border-radius:9px;color:var(--amber);font-size:15px}
+.pending-intent-copy{min-width:0}.pending-intent-copy p{margin:0;color:var(--amber);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:7.5px;letter-spacing:.11em}.pending-intent-copy h3{margin:3px 0 2px;font-size:11.5px}.pending-intent-copy span{display:block;overflow:hidden;color:#82968d;font-size:9.5px;text-overflow:ellipsis;white-space:nowrap}
+.pending-intent-actions{display:flex;align-items:center;gap:8px}.pending-intent-actions .btn{width:auto}.pending-intent-actions .linkbtn{color:#7f918a;font-size:9px}
 /* 模式分段切换（第三方 / 官方） */
 .modeseg{padding-top:10px;padding-bottom:10px}
 .seg{display:flex;gap:3px;padding:3px;background:var(--field);border:1px solid var(--line);border-radius:10px}
@@ -278,7 +336,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
 /* 键盘可见焦点（a11y）。 */
 .btn:focus-visible,.hero:focus-visible,.chip:focus-visible,.abtn:focus-visible,
 .seg-btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.link:focus-visible,
-.workflow-card:focus-visible,.rail-action:focus-visible{
+.workflow-card:focus-visible,.rail-action:focus-visible,.intake-primary:focus-visible,.intake-close:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px}
 
 /* ─────── 科研工具包 / 隐私 / 任务路由 折叠区 ─────── */
@@ -348,6 +406,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
   .app-stage{height:calc(100vh - 72px)}
   #settingsPage{padding-top:22px}
   .settings-title,.sec{margin-left:18px;margin-right:18px}
+  .pending-intent{margin-left:18px;margin-right:18px}
 }
 @media (max-width:620px){
   .brand-copy small{display:none}
@@ -367,8 +426,17 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
   .launch-console{grid-template-columns:1fr;gap:7px}
   .console-stages{display:none}
   .settings-title,.sec{margin-left:12px;margin-right:12px}
+  .pending-intent{grid-template-columns:auto 1fr;margin-left:12px;margin-right:12px}
+  .pending-intent-actions{grid-column:2;justify-content:flex-start}
   .settings-title{align-items:flex-start;gap:12px}
   .ports{flex-direction:column}
+  .research-intake{width:calc(100vw - 18px);max-height:94vh;border-radius:17px}
+  .intake-header{padding:20px 19px 17px}.intake-header h2{font-size:21px}
+  .intake-step{padding:20px 19px 22px}
+  .intake-split,.brief-summary{grid-template-columns:1fr}
+  .intake-actions{align-items:stretch;flex-direction:column-reverse}
+  .intake-actions .btn,.intake-primary{width:100%}
+  .clipboard-note{text-align:left}
 }
 @media (max-width:390px){
   .app-rail{padding-left:10px;padding-right:10px}

@@ -79,3 +79,81 @@ export function classifyWorkflowPackResult(requested, applied, warnings) {
     warnings: uniqueWarnings,
   };
 }
+
+const WORKFLOW_PACK_BASE = Object.freeze(["bio-compiler"]);
+
+const EVIDENCE_MODE_LABELS = Object.freeze({
+  rigorous: "严格核验",
+  exploratory: "探索性假设",
+  clinical: "临床边界",
+});
+
+/**
+ * The home page is an intent-first surface. This helper keeps the setup
+ * decision explicit so a missing connection never silently drops that intent.
+ */
+export function workflowSetupAction(mode, activeId, profileCount) {
+  if (mode === "official") return "switch-to-proxy";
+  if (String(activeId || "").trim()) return "launch";
+  return Number(profileCount || 0) > 0 ? "activate-profile" : "create-profile";
+}
+
+/** Always install the local deterministic compiler before a workflow skill. */
+export function requiredWorkflowPacks(packs) {
+  return [...new Set([
+    ...WORKFLOW_PACK_BASE,
+    ...(packs || []).map((id) => String(id || "").trim()).filter(Boolean),
+  ])];
+}
+
+export function validateResearchQuestion(question) {
+  const value = String(question || "").replace(/\r\n/g, "\n").trim();
+  const meaningfulLength = Array.from(value.replace(/\s/g, "")).length;
+  if (!value) {
+    return { ok: false, code: "required", message: "请先写下要解决的核心研究问题。", value };
+  }
+  if (meaningfulLength < 6) {
+    return { ok: false, code: "too-short", message: "研究问题过短；请补充研究对象、场景或目标。", value };
+  }
+  if (Array.from(value).length > 4000) {
+    return { ok: false, code: "too-long", message: "研究问题最多 4000 个字符；请把背景移到补充边界。", value };
+  }
+  return { ok: true, code: "", message: "", value };
+}
+
+/**
+ * Serialize the confirmed brief as a plain-text handoff. The explicit marker
+ * is readable by humans and future routing layers; JSON remains the audit
+ * source of truth and is never interpolated as HTML.
+ */
+export function formatResearchBriefHandoff(brief, options = {}) {
+  if (!brief || brief.status !== "ready") {
+    throw new Error("research brief must be finalized before handoff");
+  }
+  const taskId = String(
+    brief.workflow_hint || (brief.route && brief.route.task_id) || options.taskId || "",
+  ).trim();
+  if (!taskId) throw new Error("research brief is missing task id");
+  const evidenceMode = EVIDENCE_MODE_LABELS[options.evidenceMode] || EVIDENCE_MODE_LABELS.rigorous;
+  const scope = String(options.scope || "").trim();
+  const integrityRules = [
+    "先复述任务书与适用边界；若仍有未决条件，停止检索并向研究者确认。",
+    "实证声明必须绑定可核验来源；未查到视为未知，不得当作反证。",
+    "显式区分事实、推断与假设，并保留冲突证据和不确定性。",
+    "结束时给出证据矩阵/可复现产物、缺失数据与下一步区分性验证。",
+  ];
+  return [
+    "# BioCSSwitch 已确认研究任务书",
+    `BioCSSwitch-Task-ID: ${taskId}`,
+    `Evidence-Mode: ${evidenceMode}`,
+    scope ? `Operator-Scope: ${scope}` : "Operator-Scope: 未额外限定",
+    "",
+    "## 执行协议",
+    ...integrityRules.map((rule, index) => `${index + 1}. ${rule}`),
+    "",
+    "## 结构化任务书（审计源）",
+    "```json",
+    JSON.stringify(brief, null, 2),
+    "```",
+  ].join("\n");
+}

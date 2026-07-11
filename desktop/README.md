@@ -1,6 +1,6 @@
 # BioCSSwitch 桌面研究工作台（Tauri）
 
-macOS 桌面 app（正常窗口，非菜单栏），以研究意图为入口，把文献综述、单细胞分析、实验设计和跨模态靶点发现编排进一个本地优先、证据可审计的工作台。模型连接、科研工具包、隐私边界与运行诊断仍在同一应用内管理，但不再作为首页的产品中心。
+macOS 桌面 app（正常窗口，非菜单栏），以研究意图为入口，把文献综述、单细胞分析、实验设计和跨模态靶点发现编排进一个本地优先、证据可审计的工作台。每条轨道先通过本地 `bio-compiler` 生成带哈希和澄清门的研究任务书，必填边界由研究者确认后才装配工具并启动；尚未连接模型时，已确认意图会跨设置流程保留。模型连接、科研工具包、隐私边界与运行诊断仍在同一应用内管理，但不再作为首页的产品中心。
 
 架构上它只是**进程管家**：Rust 后端负责起停子进程、注入环境变量、读写配置、探活。虚拟 OAuth 伪造已在 v0.1.4 移进 Rust 原生实现（`src/oauth_forge.rs`，app 运行时不再需要 node）；翻译逻辑仍在 `proxy/csswitch_proxy.py` 作子进程调用（下一步移 axum 拔 python），沙箱启动仍走 `scripts/launch-virtual-sandbox.sh`，以保住铁律护栏与已验证行为。
 
@@ -12,6 +12,7 @@ desktop/
     index.html  styles.css  main.js
   src-tauri/
     src/lib.rs            后端入口：Tauri command（进程管家；含模式切换 set_mode / open_official）
+    src/commands/research_cmd.rs  受限 stdio bridge：本地编译/确认研究任务书，研究文本不进 argv
     src/oauth_forge.rs    虚拟 OAuth 伪造（Rust 原生：HKDF-SHA256 + AES-256-GCM v2 令牌；护栏拒真实目录）
     src/config.rs         ~/.csswitch/config.json 读写（0700/0600、拒符号链接、原子写、掩码）
     src/proc.rs           探活 / which（含登录 shell 兜底）/ 一次性 secret / 上游可达性（纯 std）

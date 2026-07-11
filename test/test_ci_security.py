@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -24,3 +25,12 @@ def test_release_bundle_declares_pooled_http_runtime():
     assert '"../../python-vendor": "python-vendor"' in config
     assert "httpx[http2]>=0.28,<1" in requirements
     assert '"httpx[http2]>=0.28,<1"' in project
+
+
+def test_macos_package_triggers_for_biomedical_release_tags():
+    workflow = (ROOT / ".github" / "workflows" / "macos-package.yml").read_text(
+        encoding="utf-8"
+    )
+    push_trigger = workflow.split("  workflow_dispatch:", 1)[0]
+    assert re.search(r'^ {6}- "bio-v\*"$', push_trigger, flags=re.MULTILINE)
+    assert "startsWith(github.ref, 'refs/tags/bio-v')" in workflow

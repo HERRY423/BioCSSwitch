@@ -148,6 +148,18 @@
 
       <div id="settingsPage" role="main" aria-labelledby="settingsHeading" hidden>
       <div class="settings-title"><button class="linkbtn back-btn" id="homeBtn" type="button">← 研究工作台</button><h2 id="settingsHeading" tabindex="-1">连接与设置</h2></div>
+      <section class="pending-intent" id="pendingIntentBanner" aria-labelledby="pendingIntentTitle" hidden>
+        <div class="pending-intent-mark" aria-hidden="true">↳</div>
+        <div class="pending-intent-copy">
+          <p>RESEARCH INTENT PRESERVED</p>
+          <h3 id="pendingIntentTitle">研究任务已保留</h3>
+          <span id="pendingIntentHint">完成连接后继续。</span>
+        </div>
+        <div class="pending-intent-actions">
+          <button class="btn small" id="pendingContinueBtn" type="button">继续启动</button>
+          <button class="linkbtn" id="pendingCancelBtn" type="button">取消任务</button>
+        </div>
+      </section>
       <div class="sec modeseg">
         <div class="seg" id="modeSeg">
           <button type="button" class="seg-btn active" data-mode="proxy">第三方模型</button>
@@ -330,5 +342,67 @@ ollama.local"></textarea>
       </div>
       </div>
     </div>
+
+    <dialog class="research-intake" id="researchIntakeDialog" aria-labelledby="intakeTitle">
+      <form id="researchIntakeForm" novalidate>
+        <header class="intake-header">
+          <div>
+            <p class="intake-kicker">RESEARCH BRIEF COMPILER · LOCAL</p>
+            <h2 id="intakeTitle">编译研究任务书</h2>
+            <span id="intakeWorkflowLabel">研究轨道</span>
+          </div>
+          <button class="intake-close" id="intakeCloseBtn" type="button" aria-label="关闭任务书">×</button>
+        </header>
+
+        <section class="intake-step" id="intakeQuestionStep" aria-labelledby="intakeQuestionHeading">
+          <div class="intake-step-heading">
+            <span>01</span>
+            <div><h3 id="intakeQuestionHeading">定义要解决的问题</h3><p>先编译边界，再检索。任务书只在本机处理。</p></div>
+          </div>
+          <label for="intakeQuestion">核心研究问题 <strong>必填</strong></label>
+          <textarea id="intakeQuestion" rows="5" maxlength="4000" placeholder="例如：EGFR 在成人复发性 GBM 中是否仍有可成药的靶点价值？请勿粘贴姓名、病历号等直接标识符。"></textarea>
+          <div class="intake-field-meta"><span id="intakeQuestionHint">包含研究对象、场景和想做出的判断。</span><span id="intakeQuestionCount">0 / 4000</span></div>
+
+          <div class="intake-split">
+            <div>
+              <label for="intakeEvidenceMode">证据策略</label>
+              <select id="intakeEvidenceMode">
+                <option value="rigorous">严格核验 · 默认</option>
+                <option value="exploratory">探索性假设 · 显式标注推断</option>
+                <option value="clinical">临床边界 · 人体证据优先</option>
+              </select>
+            </div>
+            <div>
+              <label for="intakeScope">补充边界 <span>可选</span></label>
+              <textarea id="intakeScope" rows="3" maxlength="1200" placeholder="时间窗、人群、数据范围、必须排除的证据……"></textarea>
+            </div>
+          </div>
+          <div class="intake-message" id="intakeMessage" role="status" aria-live="polite"></div>
+          <div class="intake-actions">
+            <button class="btn" id="intakeCancelBtn" type="button">取消</button>
+            <button class="intake-primary" id="intakeCompileBtn" type="submit">编译任务书 <span>→</span></button>
+          </div>
+        </section>
+
+        <section class="intake-step" id="intakeReviewStep" aria-labelledby="intakeReviewHeading" hidden>
+          <div class="intake-step-heading">
+            <span>02</span>
+            <div><h3 id="intakeReviewHeading" tabindex="-1">确认边界与缺口</h3><p>橙色字段必须由研究者确认；系统不会替你猜。</p></div>
+          </div>
+          <div class="brief-summary" id="intakeSummary" aria-label="任务书摘要"></div>
+          <div class="clarification-list" id="intakeClarifications"></div>
+          <details class="brief-preview">
+            <summary>查看结构化任务书 JSON</summary>
+            <pre id="intakeBriefPreview" tabindex="0"></pre>
+          </details>
+          <div class="intake-message" id="intakeReviewMessage" role="status" aria-live="polite"></div>
+          <div class="intake-actions">
+            <button class="btn" id="intakeBackBtn" type="button">← 修改问题</button>
+            <button class="intake-primary" id="intakeLaunchBtn" type="button">确认、复制并启动 <span>↗</span></button>
+          </div>
+          <p class="clipboard-note">确认后，完整任务书会复制到系统剪贴板；研究空间打开后粘贴即可开始。若复制失败，系统不会贸然启动。</p>
+        </section>
+      </form>
+    </dialog>
   </body>
 </html>

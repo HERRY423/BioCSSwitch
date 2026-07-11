@@ -28,6 +28,45 @@ SEC = "streamtok"
 # readline 在「头已发出」之后抛异常，从而命中被测的「流中断」收尾分支。
 
 
+def read_http_request(conn):
+    """Consume one complete HTTP request before a fake upstream responds.
+
+    Windows may reset a TCP connection when this fixture closes after only one
+    ``recv`` while the proxy is still sending a request body.  That turns a
+    deterministic upstream status test into a local ``WinError 10054`` race.
+    Reading the declared body mirrors a real HTTP peer and keeps the fixture's
+    response semantics stable across platforms.
+    """
+    conn.settimeout(2)
+    received = bytearray()
+    while b"\r\n\r\n" not in received:
+        try:
+            chunk = conn.recv(4096)
+        except OSError:
+            return
+        if not chunk:
+            return
+        received.extend(chunk)
+    head, body = bytes(received).split(b"\r\n\r\n", 1)
+    content_length = 0
+    for line in head.split(b"\r\n")[1:]:
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            try:
+                content_length = int(value.strip() or b"0")
+            except ValueError:
+                content_length = 0
+            break
+    while len(body) < content_length:
+        try:
+            chunk = conn.recv(min(4096, content_length - len(body)))
+        except OSError:
+            return
+        if not chunk:
+            return
+        body += chunk
+
+
 def start_dropping_upstream():
     """假上游：chunked 传输，首块完整合法（让代理先正常发出 200 响应头），
     随后声明第二块但提前断连，逼代理在头已发出后的下一次 readline 抛异常。"""
@@ -43,19 +82,22 @@ def start_dropping_upstream():
                 c, _ = srv.accept()
             except OSError:
                 return
-            c.recv(65536)
-            payload = ("event: content_block_delta\n"
-                       "data: {\"type\":\"content_block_delta\"}\n\n")
-            pad = ":" + "p" * (4096 - len(payload) - 2) + "\n"  # SSE 注释行，纯 padding
-            payload += pad
-            assert len(payload) == 4096, len(payload)
-            head = ("HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/event-stream\r\n"
-                    "Transfer-Encoding: chunked\r\n\r\n")
-            chunk1 = hex(len(payload))[2:] + "\r\n" + payload + "\r\n"
-            chunk2_partial = "1f4\r\n" + "0123456789"  # 声明 500 字节，只发 10 字节就断
-            c.sendall((head + chunk1 + chunk2_partial).encode())
-            c.close()
+            with c:
+                read_http_request(c)
+                payload = ("event: content_block_delta\n"
+                           "data: {\"type\":\"content_block_delta\"}\n\n")
+                pad = ":" + "p" * (4096 - len(payload) - 2) + "\n"  # SSE 注释行，纯 padding
+                payload += pad
+                assert len(payload) == 4096, len(payload)
+                head = ("HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/event-stream\r\n"
+                        "Transfer-Encoding: chunked\r\n\r\n")
+                chunk1 = hex(len(payload))[2:] + "\r\n" + payload + "\r\n"
+                chunk2_partial = "1f4\r\n" + "0123456789"  # 声明 500 字节，只发 10 字节就断
+                try:
+                    c.sendall((head + chunk1 + chunk2_partial).encode())
+                except OSError:
+                    pass
 
     threading.Thread(target=serve, daemon=True).start()
     return f"http://127.0.0.1:{port}/up", srv
@@ -76,16 +118,19 @@ def start_slow_first_frame_upstream():
                 c, _ = srv.accept()
             except OSError:
                 return
-            c.recv(65536)
-            head = ("HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/event-stream\r\n"
-                    "Transfer-Encoding: chunked\r\n\r\n")
-            first = b"event: message_start\n"
-            c.sendall(head.encode() + hex(len(first))[2:].encode() + b"\r\n" + first + b"\r\n")
-            time.sleep(1.2)
-            last = b"data: {\"type\":\"message_start\"}\n\n"
-            c.sendall(hex(len(last))[2:].encode() + b"\r\n" + last + b"\r\n0\r\n\r\n")
-            c.close()
+            with c:
+                read_http_request(c)
+                head = ("HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/event-stream\r\n"
+                        "Transfer-Encoding: chunked\r\n\r\n")
+                first = b"event: message_start\n"
+                try:
+                    c.sendall(head.encode() + hex(len(first))[2:].encode() + b"\r\n" + first + b"\r\n")
+                    time.sleep(1.2)
+                    last = b"data: {\"type\":\"message_start\"}\n\n"
+                    c.sendall(hex(len(last))[2:].encode() + b"\r\n" + last + b"\r\n0\r\n\r\n")
+                except OSError:
+                    pass
 
     threading.Thread(target=serve, daemon=True).start()
     return f"http://127.0.0.1:{port}/up", srv
@@ -106,14 +151,17 @@ def start_delayed_response_upstream():
                 c, _ = srv.accept()
             except OSError:
                 return
-            c.recv(65536)
-            time.sleep(1.2)
-            head = ("HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/event-stream\r\n"
-                    "Transfer-Encoding: chunked\r\n\r\n")
-            first = b"event: message_start\n"
-            c.sendall(head.encode() + hex(len(first))[2:].encode() + b"\r\n" + first + b"\r\n0\r\n\r\n")
-            c.close()
+            with c:
+                read_http_request(c)
+                time.sleep(1.2)
+                head = ("HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/event-stream\r\n"
+                        "Transfer-Encoding: chunked\r\n\r\n")
+                first = b"event: message_start\n"
+                try:
+                    c.sendall(head.encode() + hex(len(first))[2:].encode() + b"\r\n" + first + b"\r\n0\r\n\r\n")
+                except OSError:
+                    pass
 
     threading.Thread(target=serve, daemon=True).start()
     return f"http://127.0.0.1:{port}/up", srv
@@ -133,12 +181,17 @@ def start_status_upstream(status, body=b'{"error":"bad key"}'):
                 c, _ = srv.accept()
             except OSError:
                 return
-            c.recv(65536)
-            head = (f"HTTP/1.1 {status} Upstream Error\r\n"
-                    "Content-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\n\r\n").encode()
-            c.sendall(head + body)
-            c.close()
+            with c:
+                read_http_request(c)
+                head = (f"HTTP/1.1 {status} Upstream Error\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body)}\r\n"
+                        "Connection: close\r\n\r\n").encode()
+                try:
+                    c.sendall(head + body)
+                    c.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
 
     threading.Thread(target=serve, daemon=True).start()
     return f"http://127.0.0.1:{port}/up", srv

@@ -18,7 +18,15 @@
 - Model connection and provider configuration are now presented as settings, not the primary product surface.
 - Release metadata is aligned on `0.4.1` across the desktop app and Python package.
 
-## [Unreleased] - single-cell runnable workflows
+## [Unreleased] - research briefs and runnable workflows
+
+### Added
+- The desktop workbench now compiles every selected trajectory into a local, versioned research brief before opening Science. Four workflow contracts expose required fields, deterministic safe prefill, explicit clarifications, stable content hashes, and an auditable answer/revision chain.
+- Confirmed briefs are copied as a structured Science handoff with an explicit task marker and research-integrity protocol. Missing required boundaries fail closed and never launch a research workspace.
+- First-time connection setup now preserves the confirmed research intent. Creating or validating a model connection no longer discards the selected workflow, and a committed activation resumes the pending launch exactly once.
+
+### Fixed
+- Biomedical release tags (`bio-v*`) now trigger the macOS packaging workflow, matching the documented release convention.
 
 ### Changed
 - `bio-singlecell.sc_workflow_recipe` now returns an explicit `artifact_type=runnable_workflow` package with dry-run commands, output contracts, `README.md`, `workflow.manifest.json`, input validation, QC report generation, and provenance writing.
