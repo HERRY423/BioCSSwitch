@@ -521,6 +521,7 @@ include!("commands/pack_cmd.rs");
 include!("commands/sensitive_cmd.rs");
 include!("commands/task_cmd.rs");
 include!("commands/verify_cmd.rs");
+include!("commands/research_cmd.rs");
 
 // ---------- 入口 ----------
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -568,6 +569,8 @@ pub fn run() {
             poll_smoke_verification,
             confirm_skill_verified,
             cleanup_smoke_verification,
+            compile_research_brief,
+            finalize_research_brief,
         ])
         .setup(|app| {
             // 正常桌面应用：进 Dock、走常规应用生命周期。窗口在 tauri.conf.json 里配了

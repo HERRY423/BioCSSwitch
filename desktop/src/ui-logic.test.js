@@ -2,11 +2,15 @@ import { describe, expect, test } from "vitest";
 import {
   CAP,
   classifyWorkflowPackResult,
+  formatResearchBriefHandoff,
   isNativeAdapter,
   modelCapability,
   openaiCustomAnthropicBaseMessage,
+  requiredWorkflowPacks,
   sourceHint,
+  validateResearchQuestion,
   workflowLaunchBlocker,
+  workflowSetupAction,
 } from "./ui-logic.js";
 
 describe("model capability policy", () => {
@@ -122,5 +126,53 @@ describe("research workflow pack readiness", () => {
     );
     expect(result.blockingWarnings).toEqual([]);
     expect(result.warnings).toHaveLength(1);
+  });
+});
+
+describe("research intent setup bridge", () => {
+  test("keeps research intent while guiding first-time connection setup", () => {
+    expect(workflowSetupAction("proxy", "", 0)).toBe("create-profile");
+    expect(workflowSetupAction("proxy", "", 2)).toBe("activate-profile");
+    expect(workflowSetupAction("proxy", "profile-1", 2)).toBe("launch");
+    expect(workflowSetupAction("official", "profile-1", 2)).toBe("switch-to-proxy");
+  });
+
+  test("always includes the deterministic compiler exactly once", () => {
+    expect(requiredWorkflowPacks(["bio-audit", "bio-compiler", "bio-audit"]))
+      .toEqual(["bio-compiler", "bio-audit"]);
+  });
+});
+
+describe("research brief intake and handoff", () => {
+  test("rejects empty and underspecified research questions", () => {
+    expect(validateResearchQuestion("   ").code).toBe("required");
+    expect(validateResearchQuestion("EGFR?").code).toBe("too-short");
+    expect(validateResearchQuestion("EGFR 在 GBM 中是否仍有可成药的靶点价值？").ok).toBe(true);
+  });
+
+  test("serializes a ready brief with an explicit task marker and audit JSON", () => {
+    const brief = {
+      schema_version: "research-brief/v1",
+      status: "ready",
+      workflow_hint: "crossmodal-discovery",
+      brief_id: "rb_1234",
+      raw_question: "EGFR 在 GBM 中是否仍有靶点价值？",
+      resolved_context: { population_or_tissue: "GBM" },
+    };
+    const text = formatResearchBriefHandoff(brief, {
+      evidenceMode: "rigorous",
+      scope: "仅纳入 2020 年后的研究",
+    });
+    expect(text).toContain("BioCSSwitch-Task-ID: crossmodal-discovery");
+    expect(text).toContain("Evidence-Mode: 严格核验");
+    expect(text).toContain('"brief_id": "rb_1234"');
+    expect(text).toContain("未查到视为未知");
+  });
+
+  test("refuses to hand off a draft with unresolved clarifications", () => {
+    expect(() => formatResearchBriefHandoff({
+      status: "needs_clarification",
+      workflow_hint: "lit-review",
+    })).toThrow(/finalized/);
   });
 });

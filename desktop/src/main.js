@@ -1,11 +1,15 @@
 import {
   CAP,
   classifyWorkflowPackResult,
+  formatResearchBriefHandoff,
   isNativeAdapter,
   modelCapability,
   openaiCustomAnthropicBaseMessage,
+  requiredWorkflowPacks,
   sourceHint,
+  validateResearchQuestion,
   workflowLaunchBlocker,
+  workflowSetupAction,
 } from "./ui-logic.js";
 
 // BioCSSwitch 桌面面板前端。只调用后端 Tauri command，绝不碰任何密钥落盘逻辑。
@@ -53,6 +57,35 @@ const mockStore = {
   ],
 };
 function mockMask(k) { return k ? "••••" + String(k).slice(-4) : ""; }
+function mockCompileResearchBrief(req) {
+  const question = String((req && req.question) || "").trim();
+  const workflow = String((req && req.workflow_hint) || "lit-review");
+  const clarificationByWorkflow = {
+    "lit-review": ["primary_outcome", "主要结局 / 核心判断"],
+    "omics-code": ["dataset", "数据集路径或公开 accession"],
+    "experimental-design": ["model_system", "模型系统与关键对照"],
+    "crossmodal-discovery": ["unmet_need", "未满足需求与优先排序目标"],
+  };
+  const [id, prompt] = clarificationByWorkflow[workflow] || clarificationByWorkflow["lit-review"];
+  return {
+    schema: "biocsswitch/research-brief/1",
+    schema_version: 1,
+    revision: 1,
+    brief_id: "rb_preview_" + workflow.replace(/\W/g, "").slice(0, 12),
+    content_hash: "sha256:preview",
+    status: "needs_clarification",
+    workflow_hint: workflow,
+    raw_question: question,
+    archetype: workflow === "omics-code" ? "omics-analysis" : "target-validation",
+    disease: /GBM/i.test(question) ? { name: "Glioblastoma" } : { needs_user_input: "疾病不明" },
+    molecules: /EGFR/i.test(question) ? [{ symbol: "EGFR", confidence: "high" }] : [],
+    evidence_bar: "关键结论必须绑定可核验来源；未知不得伪装为阴性证据。",
+    recommended_skill: workflow,
+    workflow_fields: {},
+    clarifications: [{ id: `${workflow}.${id}`, field: id, label: prompt, prompt, required: true }],
+    answer_audit: [],
+  };
+}
 function mockInvoke(cmd, args) {
   args = args || {};
   switch (cmd) {
@@ -134,6 +167,25 @@ function mockInvoke(cmd, args) {
       });
     case "run_doctor":
       return Promise.resolve("（预览模式：后端未运行，这里是占位文本）");
+    case "compile_research_brief":
+      return Promise.resolve(mockCompileResearchBrief(args.req || {}));
+    case "finalize_research_brief": {
+      const draft = { ...((args.req && args.req.draft) || {}) };
+      const answers = { ...((args.req && args.req.answers) || {}) };
+      const missing = (draft.clarifications || []).filter((item) =>
+        item.required && !String(answers[item.id] || item.suggested_value || "").trim()
+      );
+      return Promise.resolve({
+        ...draft,
+        status: missing.length ? "needs_clarification" : "ready",
+        clarifications: missing,
+        workflow_fields: Object.fromEntries(Object.entries(answers).map(([key, value]) => [
+          key.replace(`${draft.workflow_hint}.`, ""), { value, via: "user-answer" },
+        ])),
+        revision: Number(draft.revision || 1) + 1,
+        content_hash: "sha256:preview-final",
+      });
+    }
     case "list_packs":
       return Promise.resolve({
         packs: [
@@ -142,6 +194,7 @@ function mockInvoke(cmd, args) {
           { id: "bio-mcp-shim", name: "远程 MCP 本地替身", description: "让 Science 仍看到 pubmed / clinical-trials / chembl / biorxiv 同名 MCP，实际走本地", optional_env: [], requires_env: [], dependencies: ["bio-lit", "bio-trials", "bio-drug"], requires_tools: [] },
           { id: "bio-norm", name: "实体标准化 / 消歧", description: "HGNC / MeSH / MONDO / HPO / GO / ChEBI + disambiguate", optional_env: [], requires_env: [], dependencies: [], requires_tools: [] },
           { id: "bio-privacy", name: "隐私 / 合规模式", description: "PHI 扫描 + 脱敏 + 审计日志 + Skill 强制", optional_env: [], requires_env: [], dependencies: [], requires_tools: [] },
+          { id: "bio-compiler", name: "研究问题编译器", description: "模糊问题 → 结构化任务书、澄清缺口与工作流交接", optional_env: [], requires_env: [], dependencies: ["bio-workflows", "bio-audit", "bio-norm"], depends_on: ["bio-workflows", "bio-audit", "bio-norm"], requires_tools: [] },
           { id: "bio-workflows", name: "科研工作流模板 Skills", description: "综述 / 靶点 / GEO / 试验 / rebuttal / grant aims", optional_env: [], requires_env: [], dependencies: ["bio-lit", "bio-audit"], requires_tools: [] },
           { id: "bio-ml", name: "机器学习突破板块", description: "多模态 FM / 虚拟细胞 / AI 药物发现 / 联邦学习 / 临床验证门", optional_env: [], requires_env: [], dependencies: ["bio-audit", "bio-privacy"], depends_on: ["bio-audit", "bio-privacy"], requires_tools: [] },
           { id: "bio-research-partner", name: "主动研究伙伴", description: "本地 HMAC 兴趣模型 / 主动简报 / 工作流预测 / 可删除", optional_env: [{ name: "BIOCSSWITCH_INTEREST_PROFILE_PATH", label: "本地研究画像路径（可选）" }], requires_env: [], dependencies: ["bio-lit", "bio-trials", "bio-kg", "bio-privacy"], depends_on: ["bio-lit", "bio-trials", "bio-kg", "bio-privacy"], requires_tools: [] },
@@ -222,6 +275,9 @@ let state = { profiles: [], templates: [], active_id: "", proxy_port: 18991, san
 let pendingSkipActivateId = null;   // set_active 校验含糊时，允许「跳过验证」再切
 let pendingConfirm = null;          // 危险操作（清 key / 删除）的「再点一次确认」态
 let lastUpdateCheck = null;
+let pendingWorkflow = null;         // 已确认但因连接/启动中断而保留的研究意图（不含 DOM 节点）
+let intakeWorkflow = null;          // 当前任务书弹窗中的稳定 workflow 描述
+let intakeDraft = null;             // compiler 返回的结构化任务书草案
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 const CAT_LABELS = { official: "官方", cn_official: "国内", custom: "自定义" };
@@ -295,7 +351,7 @@ function setBusy(on) {
     els.connSaveBtn, els.connFetchBtn, els.connClearBtn, els.connCancelBtn,
     els.metaSaveBtn, els.metaCancelBtn, els.skipActivateBtn,
     // 端口输入也纳入忙碌禁用：忙碌中改端口会与在途操作竞态（修 P1-c 前端侧）。
-    els.proxyPort, els.sandboxPort, els.settingsBtn,
+    els.proxyPort, els.sandboxPort, els.settingsBtn, els.pendingContinueBtn,
   ].forEach((b) => b && (b.disabled = on));
   document.querySelectorAll("[data-workflow]").forEach((b) => (b.disabled = on));
   // 模式切换按钮同样禁用：忙碌中切官方会与「一键开始」竞态（修 P1-b 前端侧）。
@@ -394,6 +450,7 @@ async function loadConfig() {
     applyMode(cfg.mode === "official" ? "official" : "proxy");
     renderList();
     showView("list");
+    updatePendingIntentBanner();
     // 一次性迁移提示（#9 甲）：后端 get_config 读后已清盘，只会出现一次。
     if (cfg.pending_notice) setMsg(cfg.pending_notice, "ok");
   } catch (e) {
@@ -476,6 +533,11 @@ function applyMode(m) {
 async function switchMode(m) {
   if (m === mode) return;
   if (busy) return; // 忙碌中不切模式（防与「一键开始」竞态；按钮亦已禁用，此为双保险）。修 P1-b
+  let handoffCopied = true;
+  if (pendingWorkflow && m === "proxy") {
+    handoffCopied = await copyPlainText(pendingWorkflow.handoff);
+    pendingWorkflow.clipboardReady = handoffCopied;
+  }
   setBusy(true);
   try {
     await call("set_mode", { mode: m });
@@ -493,6 +555,15 @@ async function switchMode(m) {
       : "已切到第三方模式：选一条配置「设为当前」后点「一键开始」。"
   );
   await refreshStatus();
+  if (pendingWorkflow && mode === "proxy") {
+    if (!handoffCopied) {
+      routePendingWorkflowToSettings("已切到第三方模式，但系统剪贴板拒绝写入任务书；连接完成后点“继续启动”重试。");
+    } else if (state.active_id) {
+      await resumePendingWorkflow(false);
+    } else {
+      routePendingWorkflowToSettings();
+    }
+  }
 }
 
 async function openOfficial() {
@@ -909,12 +980,21 @@ async function doDelete(id) {
 // 设为当前：走后端切换事务（校验→起正式→健康才提交）。
 // 返回体 committed:true=已生效；committed:false=未生效（可能可 skip）；抛错=回滚/中止。
 async function activate(id, skipVerify) {
+  let handoffCopied = true;
+  if (pendingWorkflow) {
+    // 仍在用户点击“设为当前”的手势链里时刷新剪贴板；避免用户刚复制 API key
+    // 覆盖了先前任务书，连接成功后却打开一个没有任务上下文的空研究空间。
+    handoffCopied = await copyPlainText(pendingWorkflow.handoff);
+    pendingWorkflow.clipboardReady = handoffCopied;
+  }
+  let committed = false;
   hideSkip();
   setBusy(true);
   setMsg(skipVerify ? "跳过验证，切换中…" : "校验中→切换中…");
   try {
     const r = await call("set_active_profile", { id, skipVerify: !!skipVerify });
     if (r && r.committed) {
+      committed = true;
       await loadConfig();
       setMsg(r.hint || "已设为当前生效。", "ok");
     } else {
@@ -928,6 +1008,13 @@ async function activate(id, skipVerify) {
   } finally {
     setBusy(false);
     await refreshStatus();
+  }
+  if (committed && pendingWorkflow) {
+    if (!handoffCopied) {
+      routePendingWorkflowToSettings("连接已验证，但系统剪贴板拒绝写入任务书；请点“继续启动”重试。");
+    } else {
+      await resumePendingWorkflow(false);
+    }
   }
 }
 
@@ -1087,44 +1174,372 @@ function syncResearchContext() {
   }
 }
 
-function showSettings() {
+function showSettings(focusHeading = true) {
   if (els.researchHome) els.researchHome.hidden = true;
   if (els.settingsPage) els.settingsPage.hidden = false;
   if (els.panel) els.panel.classList.add("settings-open");
-  if (els.settingsHeading) els.settingsHeading.focus();
+  updatePendingIntentBanner();
+  if (focusHeading && els.settingsHeading) els.settingsHeading.focus();
 }
 
-function showResearchHome() {
+function showResearchHome(focusHeading = true) {
   showView("list");
   if (els.settingsPage) els.settingsPage.hidden = true;
   if (els.researchHome) els.researchHome.hidden = false;
   if (els.panel) els.panel.classList.remove("settings-open");
   const heading = document.getElementById("researchHeading");
-  if (heading) heading.focus();
+  if (focusHeading && heading) heading.focus();
 }
 
-async function launchWorkflow(button) {
-  const task = button.dataset.workflow;
-  const packs = (button.dataset.packs || "").split(",").filter(Boolean);
-  const title = button.querySelector(".workflow-title").textContent;
+function workflowCard(task) {
+  return document.querySelector(`[data-workflow="${CSS.escape(String(task || ""))}"]`);
+}
+
+function workflowDescriptor(button) {
+  if (!button) return null;
+  const titleEl = button.querySelector(".workflow-title");
+  return {
+    task: String(button.dataset.workflow || ""),
+    packs: requiredWorkflowPacks((button.dataset.packs || "").split(",").filter(Boolean)),
+    title: titleEl ? titleEl.textContent.trim() : "研究任务",
+  };
+}
+
+function setIntakeMessage(el, text, kind) {
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "intake-message" + (kind ? " " + kind : "");
+}
+
+function setIntakeBusy(on, label) {
+  [els.intakeCompileBtn, els.intakeLaunchBtn, els.intakeBackBtn, els.intakeCancelBtn, els.intakeCloseBtn]
+    .forEach((button) => { if (button) button.disabled = !!on; });
+  if (els.intakeCompileBtn) els.intakeCompileBtn.textContent = on && label === "compile" ? "正在本地编译…" : "编译任务书 →";
+  if (els.intakeLaunchBtn) els.intakeLaunchBtn.textContent = on && label === "finalize" ? "正在校验任务书…" : "确认、复制并启动 ↗";
+}
+
+function showIntakeStep(step) {
+  const review = step === "review";
+  if (els.intakeQuestionStep) els.intakeQuestionStep.hidden = review;
+  if (els.intakeReviewStep) els.intakeReviewStep.hidden = !review;
+  const target = review ? els.intakeReviewHeading : els.intakeQuestion;
+  if (target) target.focus();
+}
+
+function openDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.showModal === "function") {
+    if (!dialog.open) dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "");
+  }
+}
+
+function closeDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.close === "function" && dialog.open) dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+function openResearchIntake(button) {
+  intakeWorkflow = workflowDescriptor(button);
+  if (!intakeWorkflow) return;
+  intakeDraft = null;
+  els.intakeWorkflowLabel.textContent = `${intakeWorkflow.title} · ${intakeWorkflow.task}`;
+  els.intakeQuestion.value = "";
+  els.intakeScope.value = "";
+  els.intakeEvidenceMode.value = "rigorous";
+  els.intakeQuestionCount.textContent = "0 / 4000";
+  els.intakeQuestion.removeAttribute("aria-invalid");
+  setIntakeMessage(els.intakeMessage, "");
+  setIntakeMessage(els.intakeReviewMessage, "");
+  showIntakeStep("question");
+  openDialog(els.researchIntakeDialog);
+  els.intakeQuestion.focus();
+}
+
+function renderBriefSummary(brief) {
+  clearChildren(els.intakeSummary);
+  const disease = brief && brief.disease && (brief.disease.name || brief.disease.raw);
+  const molecules = (brief && brief.molecules || []).map((row) => row.symbol).filter(Boolean).join(", ");
+  const rows = [
+    ["TASK ID", brief.workflow_hint || "—"],
+    ["QUESTION TYPE", brief.archetype || "待澄清"],
+    ["DISEASE / CONTEXT", disease || "待澄清"],
+    ["SEED ENTITY", molecules || (brief.drugs || []).map((row) => row.name).join(", ") || "待澄清"],
+    ["WORKFLOW SKILL", brief.recommended_skill || "—"],
+    ["BRIEF REVISION", `r${brief.revision || 1} · ${brief.status || "draft"}`],
+  ];
+  rows.forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.appendChild(textEl("span", "", label));
+    const strong = textEl("strong", "", value);
+    strong.title = value;
+    item.appendChild(strong);
+    els.intakeSummary.appendChild(item);
+  });
+}
+
+function renderClarifications(brief) {
+  clearChildren(els.intakeClarifications);
+  const pending = (brief && brief.clarifications) || [];
+  if (!pending.length) {
+    els.intakeClarifications.appendChild(textEl("div", "clarification-empty", "✓ 必填边界已齐全，可以确认启动。"));
+    return;
+  }
+  pending.forEach((item, index) => {
+    const row = document.createElement("div");
+    row.className = "clarification-item";
+    const fieldId = `clarification-${index}`;
+    const label = document.createElement("label");
+    label.htmlFor = fieldId;
+    label.textContent = `${item.label || item.field || "待确认字段"}${item.required ? " · 必填" : ""}`;
+    row.appendChild(label);
+    let input;
+    if (Array.isArray(item.options) && item.options.length) {
+      input = document.createElement("select");
+      input.appendChild(new Option("请选择…", ""));
+      item.options.forEach((option) => input.appendChild(new Option(option, option)));
+    } else {
+      input = document.createElement("textarea");
+      input.rows = 2;
+      input.maxLength = 2000;
+      input.placeholder = item.prompt || "请提供明确答案";
+    }
+    input.id = fieldId;
+    input.dataset.clarificationId = String(item.id || item.field || "");
+    input.dataset.clarificationField = String(item.field || "");
+    input.required = !!item.required;
+    if (item.suggested_value != null) input.value = String(item.suggested_value);
+    row.appendChild(input);
+    if (item.prompt) row.appendChild(textEl("small", "", item.prompt));
+    els.intakeClarifications.appendChild(row);
+  });
+}
+
+function renderIntakeReview(brief) {
+  intakeDraft = brief;
+  renderBriefSummary(brief);
+  renderClarifications(brief);
+  els.intakeBriefPreview.textContent = JSON.stringify(brief, null, 2);
+  setIntakeMessage(
+    els.intakeReviewMessage,
+    brief.status === "ready"
+      ? "任务书已达到 ready；请最后确认研究边界。"
+      : `仍有 ${(brief.clarifications || []).length} 个必填缺口。`,
+    brief.status === "ready" ? "ok" : "warn",
+  );
+  showIntakeStep("review");
+}
+
+async function compileResearchIntake() {
+  const validation = validateResearchQuestion(els.intakeQuestion.value);
+  els.intakeQuestion.setAttribute("aria-invalid", validation.ok ? "false" : "true");
+  if (!validation.ok) {
+    setIntakeMessage(els.intakeMessage, validation.message, "err");
+    els.intakeQuestion.focus();
+    return;
+  }
+  setIntakeBusy(true, "compile");
+  setIntakeMessage(els.intakeMessage, "正在调用本地确定性编译器；不会联网，也不会调用模型。");
+  try {
+    const brief = await call("compile_research_brief", {
+      req: { question: validation.value, language: "zh", workflow_hint: intakeWorkflow.task },
+    });
+    renderIntakeReview(brief);
+  } catch (e) {
+    setIntakeMessage(els.intakeMessage, "任务书编译失败：" + e, "err");
+  } finally {
+    setIntakeBusy(false);
+  }
+}
+
+function clarificationAnswers() {
+  const answers = {};
+  els.intakeClarifications.querySelectorAll("[data-clarification-id]").forEach((input) => {
+    const value = String(input.value || "").trim();
+    if (value) answers[input.dataset.clarificationId] = value;
+  });
+  return answers;
+}
+
+async function copyPlainText(text) {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {}
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch (_) {}
+  textarea.remove();
+  return copied;
+}
+
+async function finalizeAndLaunchIntake() {
+  if (!intakeDraft || !intakeWorkflow) return;
+  setIntakeBusy(true, "finalize");
+  setIntakeMessage(els.intakeReviewMessage, "正在校验必填字段与任务书哈希…");
+  try {
+    const answers = clarificationAnswers();
+    const brief = (intakeDraft.status === "ready" && !(intakeDraft.clarifications || []).length)
+      ? intakeDraft
+      : await call("finalize_research_brief", { req: { draft: intakeDraft, answers } });
+    if (brief.status !== "ready") {
+      renderIntakeReview(brief);
+      setIntakeMessage(els.intakeReviewMessage, "还有必填边界未确认；系统不会替你猜，也不会启动。", "err");
+      const first = els.intakeClarifications.querySelector("[data-clarification-id]");
+      if (first) first.focus();
+      return;
+    }
+    const evidenceMode = els.intakeEvidenceMode.value;
+    const scope = els.intakeScope.value.trim();
+    const handoff = formatResearchBriefHandoff(brief, {
+      taskId: intakeWorkflow.task,
+      evidenceMode,
+      scope,
+    });
+    const copied = await copyPlainText(handoff);
+    if (!copied) {
+      els.intakeBriefPreview.textContent = handoff;
+      setIntakeMessage(els.intakeReviewMessage, "系统剪贴板拒绝写入。任务书已放到下方预览；请手动复制后重试，研究空间尚未启动。", "err");
+      els.intakeBriefPreview.focus();
+      return;
+    }
+    pendingWorkflow = {
+      ...intakeWorkflow,
+      draft: intakeDraft,
+      brief,
+      handoff,
+      evidenceMode,
+      scope,
+      clipboardReady: true,
+    };
+    updatePendingIntentBanner();
+    closeDialog(els.researchIntakeDialog);
+    await launchWorkflow(pendingWorkflow);
+  } catch (e) {
+    setIntakeMessage(els.intakeReviewMessage, "任务书确认失败：" + e, "err");
+  } finally {
+    setIntakeBusy(false);
+  }
+}
+
+function pendingSetupAction() {
+  return workflowSetupAction(mode, state.active_id, (state.profiles || []).length);
+}
+
+function updatePendingIntentBanner(message) {
+  if (!els.pendingIntentBanner) return;
+  els.pendingIntentBanner.hidden = !pendingWorkflow;
+  if (!pendingWorkflow) return;
+  const action = pendingSetupAction();
+  const actionCopy = {
+    "switch-to-proxy": "切到第三方",
+    "create-profile": "新建连接",
+    "activate-profile": "选择连接",
+    launch: "继续启动",
+  };
+  els.pendingIntentTitle.textContent = `正在准备 · ${pendingWorkflow.title}`;
+  els.pendingIntentHint.textContent = message || `任务书 ${pendingWorkflow.brief.brief_id || "已确认"} 已保留；完成连接后继续，不必重填问题。`;
+  els.pendingContinueBtn.textContent = actionCopy[action] || "继续";
+}
+
+function routePendingWorkflowToSettings(message) {
+  if (!pendingWorkflow) return;
+  showSettings(false);
+  const action = pendingSetupAction();
+  updatePendingIntentBanner(message);
+  if (action === "create-profile") {
+    openWizard();
+    setTimeout(() => {
+      const first = els.wizTemplateChips.querySelector("button, [tabindex='0']");
+      (first || els.wizName).focus();
+    }, 0);
+  } else if (action === "activate-profile") {
+    showView("list");
+    setTimeout(() => {
+      const activateButton = els.profileList.querySelector('[data-act="activate"]');
+      (activateButton || els.newBtn).focus();
+    }, 0);
+  } else if (action === "switch-to-proxy") {
+    const proxyButton = els.modeSeg.querySelector('[data-mode="proxy"]');
+    if (proxyButton) proxyButton.focus();
+  } else if (els.pendingContinueBtn) {
+    els.pendingContinueBtn.focus();
+  }
+}
+
+function clearPendingWorkflow(focusCard = false) {
+  const task = pendingWorkflow && pendingWorkflow.task;
+  pendingWorkflow = null;
+  updatePendingIntentBanner();
+  if (focusCard && task) {
+    showResearchHome(false);
+    const card = workflowCard(task);
+    if (card) card.focus();
+  }
+}
+
+async function resumePendingWorkflow(forceCopy = false) {
+  if (!pendingWorkflow) return;
+  const action = pendingSetupAction();
+  if (action !== "launch") {
+    routePendingWorkflowToSettings();
+    return;
+  }
+  if (forceCopy || !pendingWorkflow.clipboardReady) {
+    pendingWorkflow.clipboardReady = await copyPlainText(pendingWorkflow.handoff);
+  }
+  if (!pendingWorkflow.clipboardReady) {
+    routePendingWorkflowToSettings("连接已就绪，但系统剪贴板拒绝写入任务书；请点“继续启动”重试。");
+    return;
+  }
+  showResearchHome(false);
+  await launchWorkflow(pendingWorkflow);
+}
+
+async function launchWorkflow(intent) {
+  const button = workflowCard(intent && intent.task);
+  if (!intent || !button) return;
+  const { task, packs, title } = intent;
   const blocker = workflowLaunchBlocker(mode, state.active_id);
   if (blocker === "official-mode") {
-    setResearchStatus("当前为官方 Claude 模式。请在“连接与设置”中打开官方 Science，或切回第三方模式后装配研究工作流。", "err");
-    els.settingsBtn.focus();
+    routePendingWorkflowToSettings("当前为官方 Claude 模式；任务书已保留。切到第三方模式后才能装配本地研究工具。");
     return;
   }
   if (blocker === "missing-profile") {
-    setResearchStatus("尚未连接研究引擎。请先打开左侧“连接与设置”，添加并激活一个模型连接。", "err");
-    els.settingsBtn.focus();
+    routePendingWorkflowToSettings(
+      (state.profiles || []).length
+        ? "任务书已保留。请选择并验证一条模型连接，成功后会自动继续。"
+        : "任务书已保留。先新建模型连接；创建后仍需“设为当前”完成验证。",
+    );
     return;
+  }
+  if (!intent.clipboardReady) {
+    intent.clipboardReady = await copyPlainText(intent.handoff);
+    if (!intent.clipboardReady) {
+      routePendingWorkflowToSettings("研究引擎已连接，但任务书未能写入剪贴板；请点“继续启动”重试。");
+      return;
+    }
   }
   setBusy(true);
   button.classList.add("is-launching");
   button.setAttribute("aria-busy", "true");
-  setResearchStatus(`01 / 03 · 正在为“${title}”确认任务路由…`);
+  setResearchStatus(`01 / 03 · 正在记录“${title}”任务偏好并锁定当前研究引擎…`);
   try {
+    // 当前代理的主流式请求仍使用 active profile；这里记录任务偏好，绝不谎称已完成跨 profile 路由。
     await call("set_task_route", { task, profileId: state.active_id });
-    setResearchStatus(`02 / 03 · 正在装配 ${packs.length} 组专业工具与证据规则…`);
+    setResearchStatus(`02 / 03 · 正在装配 ${packs.length} 组专业工具、问题编译器与证据规则…`);
     const packWarnings = [];
     let appliedPacks = new Set();
     for (const id of packs) {
@@ -1135,11 +1550,7 @@ async function launchWorkflow(button) {
       appliedPacks = new Set(result.applied || []);
     }
     await loadPacks();
-    const packResult = classifyWorkflowPackResult(
-      packs,
-      [...appliedPacks],
-      packWarnings,
-    );
+    const packResult = classifyWorkflowPackResult(packs, [...appliedPacks], packWarnings);
     if (packResult.missing.length || packResult.blockingWarnings.length) {
       const details = [...new Set([
         ...(packResult.missing.length ? [`未装配：${packResult.missing.join(", ")}`] : []),
@@ -1147,17 +1558,20 @@ async function launchWorkflow(button) {
       ])];
       throw new Error("关键研究工具未完整装配。" + details.join("；"));
     }
-    setResearchStatus("03 / 03 · 工具装配完成，正在打开隔离研究工作区…");
+    setResearchStatus("03 / 03 · 任务书已复制，工具装配完成，正在打开隔离研究工作区…");
     const r = await call("one_click_login");
     const nonBlockingWarnings = packResult.warnings;
     if (nonBlockingWarnings.length) {
-      setResearchStatus(`${title}已打开，但工具装配有提示：${nonBlockingWarnings.join("；")}`, "warn");
+      setResearchStatus(`${title}已打开；请粘贴已复制的任务书。工具装配提示：${nonBlockingWarnings.join("；")}`, "warn");
     } else {
-      setResearchStatus(`${title}已就绪。${r.msg || "研究工作区已打开。"}`, "ok");
+      setResearchStatus(`${title}已就绪；请在研究空间粘贴已复制的任务书。${r.msg || ""}`, "ok");
     }
+    clearPendingWorkflow(false);
     await refreshStatus();
   } catch (e) {
-    setResearchStatus("准备中断；已完成的任务路由或工具包设置可能保留，可重试或进入设置检查。原因：" + e, "err");
+    intent.clipboardReady = false;
+    pendingWorkflow = intent;
+    setResearchStatus("准备中断；任务书已保留。已完成的任务偏好或工具包设置可能保留，可重试。原因：" + e, "err");
   } finally {
     button.classList.remove("is-launching");
     button.removeAttribute("aria-busy");
@@ -1171,6 +1585,10 @@ function wire() {
     "msg", "brandDot", "openBrowserBtn", "doctorBtn", "updateBtn", "verLabel",
     "reportBtn", "logsBtn", "quitBtn", "settingsBtn", "homeBtn", "researchHome", "settingsPage", "settingsHeading", "researchStatus", "modeSeg", "proxyPort", "sandboxPort", "advSec",
     "proxyStateText", "sandboxStateText", "upstreamStateText", "activeProfileLabel", "packStateLabel", "privacyStateLabel",
+    "pendingIntentBanner", "pendingIntentTitle", "pendingIntentHint", "pendingContinueBtn", "pendingCancelBtn",
+    "researchIntakeDialog", "researchIntakeForm", "intakeTitle", "intakeWorkflowLabel", "intakeCloseBtn",
+    "intakeQuestionStep", "intakeQuestionHeading", "intakeQuestion", "intakeQuestionHint", "intakeQuestionCount", "intakeEvidenceMode", "intakeScope", "intakeMessage", "intakeCancelBtn", "intakeCompileBtn",
+    "intakeReviewStep", "intakeReviewHeading", "intakeSummary", "intakeClarifications", "intakeBriefPreview", "intakeReviewMessage", "intakeBackBtn", "intakeLaunchBtn",
     "listSec", "profileList", "newBtn", "skipActivateBtn",
     "wizSec", "wizTemplate", "wizTemplateChips", "wizTplLabel", "wizTplHint", "wizName", "wizBase", "wizBaseHint",
     "wizFetchBtn", "wizModelInfo", "wizModel", "wizModelHint", "wizKey", "wizSaveBtn", "wizCancelBtn",
@@ -1239,11 +1657,34 @@ function wire() {
     call("open_logs").catch((e) => setMsg("打开日志失败：" + e, "err"))
   );
   els.quitBtn.addEventListener("click", () => call("quit_app").catch(() => {}));
-  els.settingsBtn.addEventListener("click", showSettings);
+  els.settingsBtn.addEventListener("click", () => showSettings());
   els.homeBtn.addEventListener("click", showResearchHome);
   document.querySelectorAll("[data-workflow]").forEach((card) =>
-    card.addEventListener("click", () => launchWorkflow(card))
+    card.addEventListener("click", () => openResearchIntake(card))
   );
+  els.researchIntakeForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (els.intakeReviewStep.hidden) compileResearchIntake();
+    else finalizeAndLaunchIntake();
+  });
+  els.intakeQuestion.addEventListener("input", () => {
+    els.intakeQuestionCount.textContent = `${Array.from(els.intakeQuestion.value).length} / 4000`;
+    els.intakeQuestion.removeAttribute("aria-invalid");
+    setIntakeMessage(els.intakeMessage, "");
+  });
+  [els.intakeCloseBtn, els.intakeCancelBtn].forEach((button) =>
+    button.addEventListener("click", () => closeDialog(els.researchIntakeDialog))
+  );
+  els.intakeBackBtn.addEventListener("click", () => showIntakeStep("question"));
+  els.intakeLaunchBtn.addEventListener("click", finalizeAndLaunchIntake);
+  els.pendingContinueBtn.addEventListener("click", async () => {
+    if (!pendingWorkflow) return;
+    const action = pendingSetupAction();
+    if (action === "switch-to-proxy") await switchMode("proxy");
+    else if (action === "launch") await resumePendingWorkflow(true);
+    else routePendingWorkflowToSettings();
+  });
+  els.pendingCancelBtn.addEventListener("click", () => clearPendingWorkflow(true));
 }
 
 // ═══════════════════════ 科研工具包 / 隐私 / 任务路由（bio-* 扩展）═══════════════════════

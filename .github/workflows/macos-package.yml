@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "bio-v*"
   workflow_dispatch:
     inputs:
       publish_release:
