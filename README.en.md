@@ -4,6 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License">
+  <img src="https://img.shields.io/badge/release-0.4.2-1d63c6.svg" alt="BioCSSwitch 0.4.2">
   <img src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-1d1d1f.svg" alt="macOS Apple Silicon">
   <img src="https://img.shields.io/badge/built%20with-Tauri%202-C25A34.svg" alt="Tauri 2">
 </p>
@@ -27,6 +28,12 @@ See the [research-platform overview and example outputs](./docs/index.html). Eve
 > The current app mainly targets macOS Apple Silicon. Because the app is not notarized yet, macOS may ask you to right-click and choose "Open" the first time.
 
 [Download latest release](../../releases/latest) · [Changelog](./CHANGELOG.md) · [Report a bug](https://github.com/HERRY423/BioCSSwitch/issues/new?template=bug_report.yml) · [Request a feature](https://github.com/HERRY423/BioCSSwitch/issues/new?template=feature_request.yml)
+
+## What's new in 0.4.2
+
+- A blue-and-white scientific visual system now unifies the research home and settings surfaces.
+- Connection profiles sit on the left, while runtime and advanced controls stay on the right; research tools, privacy, verification, and task routing use a compact two-column module grid.
+- Responsive layouts preserve the same behavior on smaller windows while reducing unnecessary vertical scrolling on desktop.
 
 ## Contents
 

@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "0.4.1"
+version = "0.4.2"
 description = "BioCSSwitch desktop app (process manager + biomedical research pack panel)"
 authors = ["BioCSSwitch"]
 edition = "2021"

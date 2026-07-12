@@ -4,6 +4,20 @@
 
 > **约定**：已修问题从 [`docs/known-issues.md`](docs/known-issues.md)「毕业」到这里（发布即定稿）；未修/进行中留在 known-issues；硬 bug 的根因证据链存在 [`findings/`](findings/)。
 
+## [0.4.2] - 2026-07-12
+
+### Changed
+
+- Reworked the desktop UI into a blue-and-white scientific visual system with clearer contrast and status hierarchy.
+- Reorganized settings into a conventional split workspace: connection profiles on the left, runtime and advanced controls on the right, and a responsive two-column grid for research tools, privacy, verification, and task routing.
+- Preserved all existing control IDs, event bindings, model switching, pack management, and research-launch behavior.
+- Updated Chinese and English release documentation for the 0.4.2 desktop experience.
+
+### Release
+
+- Aligned Python, npm, Tauri, and Rust package metadata on `0.4.2`.
+- The `bio-v0.4.2` tag triggers the macOS Apple Silicon DMG release workflow.
+
 ## [0.4.1] - 2026-07-10
 
 > Product repositioning: from model switching to an AI biomedical research platform.
