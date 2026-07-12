@@ -17,7 +17,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 hkdf = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
