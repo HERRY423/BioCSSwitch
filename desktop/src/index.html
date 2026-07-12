@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#07130f" />
+    <meta name="theme-color" content="#f4f8fc" />
     <meta name="description" content="BioCSSwitch 本地优先、证据可审计的生物医学研究工作台" />
     <title>BioCSSwitch · 可审计生物医学研究工作台</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -160,6 +160,8 @@
           <button class="linkbtn" id="pendingCancelBtn" type="button">取消任务</button>
         </div>
       </section>
+      <div class="settings-layout">
+      <div class="settings-primary">
       <div class="sec modeseg">
         <div class="seg" id="modeSeg">
           <button type="button" class="seg-btn active" data-mode="proxy">第三方模型</button>
@@ -245,6 +247,20 @@
         </div>
       </div>
 
+      <!-- 高频运行操作固定在右侧，和连接配置并排，减少纵向滚动。 -->
+      </div>
+      <aside class="settings-sidebar" aria-label="运行与高级控制">
+      <div class="sec list-only runtime-control" id="runtimeSec">
+        <div class="runtime-control-heading">
+          <span>运行控制</span>
+          <small>RESEARCH RUNTIME</small>
+        </div>
+        <button class="hero" id="oneClickBtn">⚡ 一键开始</button>
+        <div class="subbtns">
+          <button class="btn" id="stopBtn">全部停止</button>
+        </div>
+      </div>
+
       <details class="sec adv tp-only" id="advSec">
         <summary>高级设置</summary>
         <div class="ports">
@@ -252,8 +268,11 @@
           <div class="fld"><label for="sandboxPort">沙箱端口</label><input id="sandboxPort" inputmode="numeric" value="8990" /></div>
         </div>
       </details>
+      </aside>
+      </div>
 
       <!-- ─────── phase-1 路径验证 ─────── -->
+      <div class="settings-tools-grid list-only">
       <details class="sec packs tp-only list-only" id="verifySec">
         <summary>🧪 验证 MCP / Skill 路径（phase-1）</summary>
         <div class="hint" id="verifyStatusHint">pack 机制的两个关键路径（<code>mcp-servers.json</code> 与 <code>skills/</code>）目前是<strong>猜测</strong>：Claude Science 二进制侧尚未逆向确认。跑一次 canary smoke test 就能真正知道它是否生效。</div>
@@ -317,20 +336,14 @@ ollama.local"></textarea>
         </div>
         <div class="msg" id="tasksMsg" role="status" aria-live="polite"></div>
       </details>
+      </div>
 
       <!-- 反馈消息：有真实反馈（表单错误 / 回滚 / 保存结果 / 自检）才显示，空闲不占位。 -->
       <div class="sec feedback" hidden>
         <div class="msg" id="msg" role="status" aria-live="polite"></div>
       </div>
 
-      <!-- 运行控制区 + 状态灯：仅列表视图显示（表单视图由 .view-form 隐藏）。 -->
-      <div class="sec list-only">
-        <button class="hero" id="oneClickBtn">⚡ 一键开始</button>
-        <div class="subbtns">
-          <button class="btn" id="stopBtn">全部停止</button>
-        </div>
-      </div>
-
+      <div class="settings-footer list-only">
       <div class="foot list-only">
         <button type="button" class="link linkbtn" id="openBrowserBtn">打开浏览器面板 ↗</button>
         <button type="button" class="link linkbtn" id="reportBtn">反馈 / 报 bug</button>
@@ -338,6 +351,7 @@ ollama.local"></textarea>
       <div class="foot foot2 list-only">
         <span><button type="button" class="link linkbtn" id="doctorBtn">自检</button> · <button type="button" class="link linkbtn" id="logsBtn">日志</button></span>
         <span><button type="button" class="link linkbtn" id="updateBtn">检查更新</button> · <span id="verLabel"></span></span>
+      </div>
       </div>
       </div>
       </div>
