@@ -11,6 +11,6 @@
     "@emnapi/core": "^1.11.2",
     "@emnapi/runtime": "^1.11.2",
     "@tauri-apps/cli": "^2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.1"
   }
 }
